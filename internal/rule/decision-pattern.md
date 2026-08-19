@@ -4,7 +4,8 @@ Free Monad / Interpreter パターンに近い概念で、「計算の記述」�
 DDD トリレンマ（Purity, Completeness, Performance）を解決するためのパターン。
 
 - Purity: domain の Decide メソッドは純粋関数。副作用（DB アクセス等）を持たない
-- Completeness: 各 NeedYyy 状態が「次に何が必要か」を完全に記述する
+- Completeness: 次に何を取るかという判断まで domain が持つので、ドメインロジックが
+  呼び出し側に分断されない
 - Performance: interpreter が必要なデータだけを逐次取得する
 
 この文書は domain の外側で取得を行う層を「interpreter」と呼ぶ。層の名前はリポジトリに

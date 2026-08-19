@@ -31,9 +31,10 @@ for {
 }
 ```
 
-解こうとしているのは [DDD トリレンマ](https://enterprisecraftsmanship.com/posts/domain-model-purity-completeness/)。ドメインモデルの純粋さ（Purity）、判断に必要な情報が
-揃っていること（Completeness）、余計な取得をしないこと（Performance）は、素直に書くと
-どれか 1 つを諦めることになる。
+解こうとしているのは [DDD トリレンマ](https://enterprisecraftsmanship.com/posts/domain-model-purity-completeness/)。domain がプロセス外の依存に
+触れないこと（Purity）、ドメインロジックが分断されず domain にすべて収まっていること
+（Completeness）、余計な取得をしないこと（Performance）は、素直に書くとどれか 1 つを
+諦めることになる。
 
 | 素直な書き方 | 諦めるもの |
 |---|---|
