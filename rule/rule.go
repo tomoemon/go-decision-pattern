@@ -7,11 +7,27 @@ package rule
 
 import (
 	_ "embed"
+	"regexp"
 	"strings"
 )
 
 //go:embed decision-pattern.md
 var body string
+
+// versionLine は本文の先頭付近に置いた版の行を拾う。
+// 版を本文に持たせるのは、ツールを入れずにコピーだけで取り込んだ利用者が、
+// 手元の写しと配布元を突き合わせられるようにするため。go.mod に載らない
+// 取り込み方では、版を知る手段がここしかない。
+var versionLine = regexp.MustCompile(`(?m)^規約バージョン: (v[0-9]+\.[0-9]+\.[0-9]+)`)
+
+// Version は規約本文が宣言している版を返す。
+func Version() string {
+	m := versionLine.FindStringSubmatch(body)
+	if m == nil {
+		return ""
+	}
+	return m[1]
+}
 
 // generatedNotice は書き出したファイルを手で直させないための注記。
 // frontmatter の後に置く。先頭に置くと frontmatter として読まれない。

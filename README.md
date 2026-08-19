@@ -68,10 +68,17 @@ Decision パターンは「次に何が必要か」を状態として返すこ�
 
 ```sh
 curl -o .claude/rules/decision-pattern.md \
-  https://raw.githubusercontent.com/tomoemon/go-decision-pattern/main/rule/decision-pattern.md
+  https://raw.githubusercontent.com/tomoemon/go-decision-pattern/v0.1.0/rule/decision-pattern.md
 ```
 
 置き場所はエージェントに合わせる（Claude Code なら `.claude/rules/`、Codex なら `AGENTS.md` から参照するなど）。
+
+本文の先頭に規約バージョンの行がある。手元の写しがどの版かはそこで分かるので、[releases](https://github.com/tomoemon/go-decision-pattern/releases) と見比べて、上がっていれば取り込み直す。写しを勝手に書き換えていないかは差分で確かめられる。
+
+```sh
+diff <(curl -sL https://raw.githubusercontent.com/tomoemon/go-decision-pattern/v0.1.0/rule/decision-pattern.md) \
+     .claude/rules/decision-pattern.md
+```
 
 対象を絞るなら frontmatter を足す。無いとリポジトリ全体向けの指示として扱われ、Decision と無関係な作業でも読み込まれる。
 

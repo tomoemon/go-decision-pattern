@@ -1,5 +1,7 @@
 # Decision パターン
 
+規約バージョン: v0.1.0 — 最新は https://github.com/tomoemon/go-decision-pattern/releases で確認する
+
 Free Monad / Interpreter パターンに近い概念で、「計算の記述」と「計算の実行」を分離する。DDD トリレンマ（Purity, Completeness, Performance）を解決するためのパターン。
 
 - Purity: domain の Decide メソッドは純粋関数。副作用（DB アクセス等）を持たない
