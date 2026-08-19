@@ -24,6 +24,77 @@ Decision パターンは判断と取得を分ける。その結果、実際に�
 
 状態遷移は型として書かれているので、そこから機械的に復元する。
 
+## 例
+
+記事の公開可否を判定する Decision（全文は
+[testdata/publish/publish.go](https://github.com/tomoemon/go-decision-pattern/blob/main/internal/flow/testdata/publish/publish.go)）。
+
+```go
+// publishFactsArticle は Article 取得で確定する事実。
+type publishFactsArticle struct {
+	ArticleID ArticleID
+	AuthorID  AuthorID
+}
+
+// 開始状態。まだ何も確定していないので取得キーだけを持つ。
+type PublishNeedArticle struct {
+	ArticleID ArticleID
+}
+
+func (s PublishNeedArticle) Decide(article Article) PublishDecision {
+	if article.Status != StatusDraft {
+		return PublishFailed{Err: ErrNotDraft}
+	}
+	if article.Body == "" {
+		return PublishFailed{Err: ErrEmptyBody}
+	}
+	return PublishNeedAuthorSuspension{
+		publishFactsArticle: publishFactsArticle{ArticleID: article.ID, AuthorID: article.AuthorID},
+	}
+}
+
+// 取得キーは確定済みの AuthorID。
+type PublishNeedAuthorSuspension struct {
+	publishFactsArticle
+}
+
+func (s PublishNeedAuthorSuspension) Decide(suspended bool, now time.Time) PublishDecision {
+	if suspended {
+		return PublishFailed{Err: ErrAuthorSuspended}
+	}
+	return PublishDecided{publishFactsArticle: s.publishFactsArticle, PublishedAt: now}
+}
+```
+
+`decision-pattern flow` に通すと次が出る。
+
+```mermaid
+flowchart TD
+  classDef box text-align:left;
+  start0(["NewPublishDecision"])
+  start0 --> n0
+  n0["NeedArticle<br/>- ArticleID ArticleID<br/>+ article Article"]:::box
+  n1(["Failed<br/>- Err: ErrNotDraft"]):::box
+  n2(["Failed<br/>- Err: ErrEmptyBody"]):::box
+  n3["NeedAuthorSuspension<br/>- publishFactsArticle<br/>+ suspended bool<br/>+ now time.Time"]:::box
+  n4(["Failed<br/>- Err: ErrAuthorSuspended"]):::box
+  n5(["Decided<br/>- PublishedAt: now"]):::box
+  n0 -- "article.Status != StatusDraft" --> n1
+  n0 -- "article.Body == #quot;#quot;" --> n2
+  n0 -- "それ以外" --> n3
+  n3 -- "suspended" --> n4
+  n3 -- "それ以外" --> n5
+```
+
+コードとの対応は次のとおり。
+
+- `Xxx` プレフィックスは落とすので `PublishNeedArticle` は `NeedArticle` になる
+- `- ArticleID ArticleID` は状態が持つ取得キー、`+ article Article` は `Decide` の引数
+- `- publishFactsArticle` は埋め込んだ事実。中は展開しない
+- 同じ `PublishFailed` でも `Err` が違えば別ノードになり、どの条件でどの結末に着くかが残る
+- `PublishDecided` のリテラルは `publishFactsArticle` への代入を除いて `PublishedAt` だけ出る。
+  事実はどの終端にも同じ形で運ばれるだけで、結末を分けないため
+
 ## 解析対象
 
 `//decision:decl` が付いた interface だけを対象にする。

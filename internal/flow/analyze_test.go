@@ -140,3 +140,35 @@ func TestAnalyzeEdgeCases(t *testing.T) {
 		})
 	}
 }
+
+// README に載せている例。図が古くならないよう、生成結果をここで固定する。
+// 規約どおりに書いた最小構成なので、警告が出たらどちらかが規約から外れている。
+func TestAnalyzeReadmeExample(t *testing.T) {
+	decisions, err := Analyze(".", []string{"./testdata/publish"})
+	if err != nil {
+		t.Fatalf("Analyze() error = %v", err)
+	}
+	if len(decisions) != 1 {
+		t.Fatalf("decisions = %d, want 1", len(decisions))
+	}
+	d := decisions[0]
+	if len(d.Warnings) != 0 {
+		t.Errorf("規約どおりの例で警告が出ている: %v", d.Warnings)
+	}
+
+	out := Render(d)
+	want := []string{
+		`n0["NeedArticle<br/>- ArticleID ArticleID<br/>+ article Article"]`,
+		`n3["NeedAuthorSuspension<br/>- publishFactsArticle<br/>+ suspended bool<br/>+ now time.Time"]`,
+		`n1(["Failed<br/>- Err: ErrNotDraft"])`,
+		`n2(["Failed<br/>- Err: ErrEmptyBody"])`,
+		`n5(["Decided<br/>- PublishedAt: now"])`,
+		`n0 -- "article.Status != StatusDraft" --> n1`,
+		`n3 -- "それ以外" --> n5`,
+	}
+	for _, w := range want {
+		if !strings.Contains(out, w) {
+			t.Errorf("README の図と一致しない。出力に %q が無い\n---\n%s", w, out)
+		}
+	}
+}
