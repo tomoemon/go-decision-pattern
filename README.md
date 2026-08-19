@@ -31,7 +31,7 @@ for {
 }
 ```
 
-解こうとしているのは DDD トリレンマ。ドメインモデルの純粋さ（Purity）、判断に必要な情報が
+解こうとしているのは [DDD トリレンマ](https://enterprisecraftsmanship.com/posts/domain-model-purity-completeness/)。ドメインモデルの純粋さ（Purity）、判断に必要な情報が
 揃っていること（Completeness）、余計な取得をしないこと（Performance）は、素直に書くと
 どれか 1 つを諦めることになる。
 
