@@ -2,13 +2,77 @@
 
 Decision パターンの規約と、それを検証するツール。
 
-Decision パターンは、判定を domain の純粋関数に閉じ込め、取得を呼び出し側の interpreter に
-任せることで DDD トリレンマ（Purity, Completeness, Performance）を解く。このリポジトリは
-その規約の正本を持ち、規約どおりに書かれているかを静的に確かめる。
+規約の本文: [internal/rule/decision-pattern.md](https://github.com/tomoemon/go-decision-pattern/blob/main/internal/rule/decision-pattern.md)
 
-規約は複数のリポジトリで共有する。片方だけ直すと文面が分岐するので、本文はここに 1 つだけ
-置き、取り込む側は書き出して commit する。ツールと規約が同じモジュールに入っているので、
-`go.mod` の版が「どの版の規約に従っているか」をそのまま表す。
+## Decision パターンとは
+
+判定を「次に何が必要か」の連なりとして型で書き、実際の取得は呼び出し側に任せる。
+domain は純粋関数のまま、取得は必要な分だけ逐次行える。
+
+```go
+// domain: 判断だけ。DB を触らない
+func (s XxxNeedArticle) Decide(article Article) XxxDecision {
+    if article.Visibility != VisibilityPublic {
+        return XxxFailed{Err: ErrNotPublic}
+    }
+    return XxxNeedBlock{xxxFactsArticle: xxxFactsArticle{AuthorID: article.AuthorID}}
+}
+
+// 呼び出し側: 状態が要求したものを取ってきて渡すだけ
+for {
+    switch d := decision.(type) {
+    case XxxNeedArticle:
+        article, err := repo.GetArticle(ctx, d.ArticleID)
+        if err != nil { return err }
+        decision = d.Decide(article)
+    case XxxNeedBlock:
+        ...
+    }
+}
+```
+
+解こうとしているのは DDD トリレンマ。ドメインモデルの純粋さ（Purity）、判断に必要な情報が
+揃っていること（Completeness）、余計な取得をしないこと（Performance）は、素直に書くと
+どれか 1 つを諦めることになる。
+
+| 素直な書き方 | 諦めるもの |
+|---|---|
+| domain が repository を呼ぶ | Purity。domain が DB に依存し、テストに DB が要る |
+| 呼び出し側で先に全部取って domain に渡す | Performance。使わないデータまで毎回取る |
+| 判断を呼び出し側に散らす | Completeness。ロジックが domain の外に漏れる |
+
+Decision パターンは「次に何が必要か」を状態として返すことで 3 つとも満たす。
+
+## 何が得られるか
+
+- domain に DB アクセスが入らない。テストは値を渡すだけで書ける
+- 判断が呼び出し側に漏れない。`if` はすべて `Decide` の中にある
+- 取得は判断の結果に応じた分だけになる。早く終わる経路では後続を引かない
+- 状態の網羅を lint が保証する。分岐を足して `case` を書き忘れると実行前に落ちる
+- 取りうる経路を静的に復元できる。このリポジトリの `flow` がそれを図にする
+
+## 何を払うか
+
+- 型が増える。1 つの判定に interface が 1 つ、状態が段数分、事実の struct がそれと同程度。
+  5 段の判定なら型は 10 を超える
+- 呼び出し側に for-switch のボイラープレートが要る。段の数だけ `case` が並ぶ
+- `go-check-sumtype` が実質必須になる。`case` が漏れると状態が更新されないまま無限ループする。
+  golangci-lint 経由ではパッケージをまたぐ `//sumtype:decl` を認識できないため、
+  lint とは別に直接実行する必要がある
+- 「どこで何が確定したか」を設計する手間がかかる。事実をまとめる単位を誤ると、
+  ゼロ値を持つ状態ができて型の保証が崩れる
+- 全体のフローがコード上のどこにも書かれない。domain は状態ごとに分かれ、呼び出し側は
+  順序を持たないため。この欠点を埋めるために `flow` がある
+
+## 使いどころ
+
+判定条件は「domain の判断結果によって、次に取得するものが変わるか」。変わらないなら
+必要ない。取得が何段階に分かれていても、取得するものが判断に依存しないなら、
+呼び出し側で全部取って純粋関数に渡せば済む。
+
+「変わる」に当てはまっても Decision にしない場合が 4 つある。詳細は規約の
+[適用基準](https://github.com/tomoemon/go-decision-pattern/blob/main/internal/rule/decision-pattern.md#適用基準)
+を参照。
 
 ## 導入
 
@@ -17,6 +81,10 @@ go get -tool github.com/tomoemon/go-decision-pattern/cmd/decision-pattern
 ```
 
 ## 規約を取り込む
+
+規約は複数のリポジトリで共有する。片方だけ直すと文面が分岐するので、本文はこのリポジトリに
+1 つだけ置き、取り込む側は書き出して commit する。ツールと規約が同じモジュールに入って
+いるので、`go.mod` の版が「どの版の規約に従っているか」をそのまま表す。
 
 ```sh
 go tool decision-pattern rule \
@@ -29,8 +97,7 @@ go tool decision-pattern rule \
 省略すると frontmatter が付かず、リポジトリ全体向けの指示として扱われる。
 
 書き出したファイルは生成物なので手で直さない。リポジトリ固有の事情（層の呼び名、lint の
-設定、そのリポジトリでの実例）は別ファイルに分けて置く。`.claude/rules/` 配下の Markdown は
-すべて読まれるので、2 ファイルに分かれていても両方が適用される。
+設定、そのリポジトリでの実例）は別ファイルに分けて置く。
 
 更新は `go get -u` して書き出し直す。CI で次を回せば、書き出し忘れを検出できる。
 
@@ -41,110 +108,14 @@ git diff --exit-code .claude/rules/decision-pattern.md
 
 ## フローチャートを生成する
 
+`//decision:decl` が付いた sum type の状態遷移を解析し、取りうる経路を Mermaid で出す。
+到達しない状態や `nil` の返却など、規約に反する形も報告する。
+
 ```sh
-go tool decision-pattern flow ./domain/...                       # 標準出力
-go tool decision-pattern flow -o docs/flow ./domain/...          # Decision ごとに 1 ファイル
+go tool decision-pattern flow ./domain/...              # 標準出力
+go tool decision-pattern flow -o docs/flow ./domain/... # Decision ごとに 1 ファイル
 ```
 
-| フラグ | 意味 |
-|---|---|
-| `-o <dir>` | 出力先ディレクトリ。省略時は標準出力にまとめて書く |
-| `-C <dir>` | 解析を実行する起点ディレクトリ |
-| `-strict` | 警告が 1 件でもあれば終了コード 1 にする |
-
-### 何のためのものか
-
-Decision パターンは判定と取得を分ける。その結果、実際にどの順でどのデータを取り、
-どの条件でどこへ分岐してどの結末に着くのかが、どちらを読んでも一度には見えない。
-
-- domain 側: 状態ごとに `Decide` が分かれていて、全体の並びはどこにも書かれていない
-- interpreter 側: for-switch で次の状態を回すだけで、順序を持たない
-
-状態遷移は型として書かれているので、そこから機械的に復元する。
-
-### 解析対象
-
-`//decision:decl` が付いた interface だけを対象にする。
-
-```go
-//sumtype:decl
-//decision:decl
-type PublishDecision interface {
-	isPublishDecision()
-}
-```
-
-`//sumtype:decl` は go-check-sumtype 用の汎用マーカーで、Decision パターンと無関係な
-sum type にも付く。対象の判定に使うと、単なる結果の union まで図の対象になる。
-
-タグが表すのは「この sum type は Decision パターンの状態機械である」という型の性質で、
-ツールの出力指示ではない。フローチャートの生成はそこから導かれる用途の 1 つ。
-
-### 図に出るもの
-
-| 要素 | 出どころ |
-|---|---|
-| 開始点 | interface を返す非メソッド関数 (`NewXxxDecision`) の `return` |
-| 中間状態 (四角) | `Decide` を持つ状態 |
-| 終端 (角丸) | `Decide` を持たない状態。返却リテラルのフィールドごとに分ける |
-| 遷移のラベル | `return` を囲む `if` / `switch` の条件のソース。条件が無ければ「それ以外」 |
-
-ノードの中の箇条書きは記号で意味が変わる。同じ記号で並べると、持ち物と入力が
-同じものに見える。
-
-| 記号 | 中身 |
-|---|---|
-| `-` | その状態が自分で持っているもの。Need なら取得キーと確定した事実、終端なら返却リテラルのフィールド |
-| `+` | `Decide` に外から渡されるもの |
-
-終端を型ごとではなくリテラルごとに分けるのは、同じ `Decided` でも `Reason` が違えば
-別の結末だから。まとめると「どの条件でどの結末になるか」が読めなくなる。
-
-埋め込んだ事実の struct (`xxxFactsYyy`) は中を展開せず名前だけ出す。展開すると、事実を
-積み上げる Decision でノードが際限なく縦に伸びるうえ、同じ事実が全状態に繰り返し並ぶ。
-終端のリテラルでは、事実の struct への代入そのものを除く。どの終端にも同じ形で運ばれる
-だけで結末を分けない。
-
-`return` が同じパッケージの関数呼び出しになっている場合は、その関数の中まで辿る。
-辿らないとヘルパーに切り出した分岐が図から丸ごと消える。
-
-### 警告
-
-`-strict` を付けると失敗として扱う。
-
-- どの経路からも到達しない状態がある。go-check-sumtype が見るのは interpreter の
-  switch の網羅なので、「case は書いてあるが実際には到達しない状態」はここでしか分からない
-- 図に 1 度も現れない状態がある。遷移メソッドを持たず誰からも返されない状態は
-  ノードにならないので、グラフの到達可能性では見つからない
-- `Decision` に `nil` を返している。interpreter が状態を受け取れない
-- `return` が静的に解決できない。別パッケージの関数越しなど
-- 値では interface を満たさずポインタだけが満たしている状態がある。
-  go-check-sumtype は通るが `case Xxx:` にマッチせず実行時に `default` へ落ちる
-
-### 前提
-
-規約に書かれていないことを 1 つだけ仮定している。
-
-- 遷移メソッドの名前は `Decide`。規約では固定しているが、Go の型としては任意の名前を
-  付けられる。別名にすると解析はその状態を終端とみなす。ただし黙って落ちることはなく、
-  「図に現れない。<名前> が遷移メソッドに見える」と報告する
-
-規約に書かれていることのうち、次に依存している。いずれも守られていなければ警告する。
-
-- 状態は interface と同じパッケージにある
-- 状態は値で返す
-- 状態は非 nil
-
-型検査を通すので、生成コードが揃っていない状態では失敗する。`go build ./...` が通る状態で
-実行すること。
-
-### 制約
-
-図が実態より粗くなる場合がある。いずれも誤りではないが、情報が落ちる。
-
-- 終端をリテラルではなく変数で返していると、フィールドの内訳が出せず型名だけのノードになる。
-  同じ変数を条件ごとに書き換えてから返す形では、経路ごとの違いが図に出ない
-- ループの中の `return` は、ループであることを図に出さない。条件だけがラベルになる
-- 別パッケージの関数越しに状態を返していると中を辿れない（警告する）
-- 条件のソースをそのまま載せるので、条件が長いとラベルも長くなる。
-  分岐が多いコンストラクタでは開始ノードから伸びる線がその分増える
+図の読み方、警告の種類、解析の前提と制約は
+[internal/flow/README.md](https://github.com/tomoemon/go-decision-pattern/blob/main/internal/flow/README.md)
+を参照。
