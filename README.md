@@ -2,7 +2,7 @@
 
 Decision パターンの規約と、それを検証するツール。
 
-規約の本文: [internal/rule/decision-pattern.md](https://github.com/tomoemon/go-decision-pattern/blob/main/internal/rule/decision-pattern.md)
+規約の本文: [rule/decision-pattern.md](https://github.com/tomoemon/go-decision-pattern/blob/main/rule/decision-pattern.md)
 
 ## Decision パターンとは
 
@@ -60,17 +60,40 @@ Decision パターンは「次に何が必要か」を状態として返すこ�
 
 判定条件は「domain の判断結果によって、次に取得するものが変わるか」。変わらないなら必要ない。取得が何段階に分かれていても、取得するものが判断に依存しないなら、呼び出し側で全部取って純粋関数に渡せば済む。
 
-「変わる」に当てはまっても Decision にしない場合が 4 つある。詳細は規約の [適用基準](https://github.com/tomoemon/go-decision-pattern/blob/main/internal/rule/decision-pattern.md#適用基準) を参照。
+「変わる」に当てはまっても Decision にしない場合が 4 つある。詳細は規約の [適用基準](https://github.com/tomoemon/go-decision-pattern/blob/main/rule/decision-pattern.md#適用基準) を参照。
 
-## 導入
+## 規約を取り込む
+
+規約は Markdown が 1 つあるだけなので、コピーして AI エージェントが読む場所に置けばよい。Go の依存は要らない。
+
+```sh
+curl -o .claude/rules/decision-pattern.md \
+  https://raw.githubusercontent.com/tomoemon/go-decision-pattern/main/rule/decision-pattern.md
+```
+
+置き場所はエージェントに合わせる（Claude Code なら `.claude/rules/`、Codex なら `AGENTS.md` から参照するなど）。
+
+対象を絞るなら frontmatter を足す。無いとリポジトリ全体向けの指示として扱われ、Decision と無関係な作業でも読み込まれる。
+
+```yaml
+---
+paths:
+  - "domain/**/*.go"
+  - "application/**/*.go"
+---
+```
+
+複数のリポジトリで共有する場合、片方だけ直すと文面が分岐する。本文はこのリポジトリに 1 つだけ置き、取り込む側はコピーを commit する。リポジトリ固有の事情（層の呼び名、lint の設定、そのリポジトリでの実例）は別ファイルに分けて置く。
+
+## ツールを使う
+
+フローチャートの生成や、規約に反する形の検出をしたい場合だけ入れる。
 
 ```sh
 go get -tool github.com/tomoemon/go-decision-pattern/cmd/decision-pattern
 ```
 
-## 規約を取り込む
-
-規約は複数のリポジトリで共有する。片方だけ直すと文面が分岐するので、本文はこのリポジトリに 1 つだけ置き、取り込む側は書き出して commit する。ツールと規約が同じモジュールに入っているので、`go.mod` の版が「どの版の規約に従っているか」をそのまま表す。
+入れると規約の書き出しもコマンドでできる。frontmatter の注入と、生成物である旨の注記が付く。版が `go.mod` で固定されるので「どの版の規約に従っているか」がコミットに残る。
 
 ```sh
 go tool decision-pattern rule \
@@ -79,10 +102,6 @@ go tool decision-pattern rule \
   -o .claude/rules/decision-pattern.md
 ```
 
-`-path` は frontmatter の `paths` に入る glob で、取り込む側のディレクトリ構成に合わせる。省略すると frontmatter が付かず、リポジトリ全体向けの指示として扱われる。
-
-書き出したファイルは生成物なので手で直さない。リポジトリ固有の事情（層の呼び名、lint の設定、そのリポジトリでの実例）は別ファイルに分けて置く。
-
 更新は `go get -u` して書き出し直す。CI で次を回せば、書き出し忘れを検出できる。
 
 ```sh
@@ -90,7 +109,8 @@ go tool decision-pattern rule -path ... -o .claude/rules/decision-pattern.md
 git diff --exit-code .claude/rules/decision-pattern.md
 ```
 
-## フローチャートを生成する
+
+### フローチャートを生成する
 
 `//decision:decl` が付いた sum type の状態遷移を解析し、取りうる経路を Mermaid で出す。到達しない状態や `nil` の返却など、規約に反する形も報告する。
 

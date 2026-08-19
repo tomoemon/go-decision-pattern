@@ -20,7 +20,7 @@ import (
 	"os"
 
 	"github.com/tomoemon/go-decision-pattern/internal/flow"
-	"github.com/tomoemon/go-decision-pattern/internal/rule"
+	"github.com/tomoemon/go-decision-pattern/rule"
 )
 
 func main() {
