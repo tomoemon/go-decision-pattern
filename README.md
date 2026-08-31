@@ -74,16 +74,19 @@ Decision パターンは「次に何が必要か」を状態として返すこ�
 規約は Markdown が 1 つあるだけなので、コピーして AI エージェントが読む場所に置けばよい。Go の依存は要らない。
 
 ```sh
-curl -o .claude/rules/decision-pattern.md \
-  https://raw.githubusercontent.com/tomoemon/go-decision-pattern/v0.1.0/rule/decision-pattern.md
+curl -Lo .claude/rules/decision-pattern.md \
+  https://github.com/tomoemon/go-decision-pattern/releases/latest/download/decision-pattern.md
 ```
+
+本文は各リリースに添付してあるので、この URL は版が上がっても変わらない。特定の版が要るなら `latest` をタグに置き換える。
 
 置き場所はエージェントに合わせる（Claude Code なら `.claude/rules/`、Codex なら `AGENTS.md` から参照するなど）。
 
 本文の先頭に規約バージョンの行がある。手元の写しがどの版かはそこで分かるので、[releases](https://github.com/tomoemon/go-decision-pattern/releases) と見比べて、上がっていれば取り込み直す。写しを勝手に書き換えていないかは差分で確かめられる。
 
 ```sh
-diff <(curl -sL https://raw.githubusercontent.com/tomoemon/go-decision-pattern/v0.1.0/rule/decision-pattern.md) \
+ver=$(sed -n 's/^規約バージョン: \(v[0-9.]*\).*/\1/p' .claude/rules/decision-pattern.md)
+diff <(curl -sL https://github.com/tomoemon/go-decision-pattern/releases/download/$ver/decision-pattern.md) \
      .claude/rules/decision-pattern.md
 ```
 
