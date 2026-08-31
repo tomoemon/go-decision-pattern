@@ -74,21 +74,22 @@ Decision パターンは「次に何が必要か」を状態として返すこ�
 規約は Markdown が 1 つあるだけなので、コピーして AI エージェントが読む場所に置けばよい。Go の依存は要らない。
 
 ```sh
-curl -Lo .claude/rules/decision-pattern.md \
-  https://github.com/tomoemon/go-decision-pattern/releases/latest/download/decision-pattern.md
+curl -o .claude/rules/decision-pattern.md \
+  https://raw.githubusercontent.com/tomoemon/go-decision-pattern/main/rule/decision-pattern.md
 ```
 
-本文は各リリースに添付してあるので、この URL は版が上がっても変わらない。特定の版が要るなら `latest` をタグに置き換える。
+この取り込み方は版を固定しない。取り込んだ時点の内容がそのまま写しになる。版で固定したいならツールを入れて `go.mod` に持たせる（下記）。
 
 置き場所はエージェントに合わせる（Claude Code なら `.claude/rules/`、Codex なら `AGENTS.md` から参照するなど）。
 
-本文の先頭に規約バージョンの行がある。手元の写しがどの版かはそこで分かるので、[releases](https://github.com/tomoemon/go-decision-pattern/releases) と見比べて、上がっていれば取り込み直す。写しを勝手に書き換えていないかは差分で確かめられる。
+本文の先頭に規約バージョンの行がある。手元の写しがどの版かはそこで分かるので、[releases](https://github.com/tomoemon/go-decision-pattern/releases) と見比べて、上がっていれば取り込み直す。配布元との差分も同じ URL で見られる。
 
 ```sh
-ver=$(sed -n 's/^規約バージョン: \(v[0-9.]*\).*/\1/p' .claude/rules/decision-pattern.md)
-diff <(curl -sL https://github.com/tomoemon/go-decision-pattern/releases/download/$ver/decision-pattern.md) \
+diff <(curl -sL https://raw.githubusercontent.com/tomoemon/go-decision-pattern/main/rule/decision-pattern.md) \
      .claude/rules/decision-pattern.md
 ```
+
+差分には、写しを書き換えた分と、取り込んだ後に配布元で変わった分の両方が出る。どちらかだけを見たいなら版を固定する取り込み方にする。
 
 対象を絞るなら frontmatter を足す。無いとリポジトリ全体向けの指示として扱われ、Decision と無関係な作業でも読み込まれる。
 
