@@ -78,18 +78,18 @@ curl -o .claude/rules/decision-pattern.md \
   https://raw.githubusercontent.com/tomoemon/go-decision-pattern/main/rule/decision-pattern.md
 ```
 
-この取り込み方は版を固定しない。取り込んだ時点の内容がそのまま写しになる。版で固定したいならツールを入れて `go.mod` に持たせる（下記）。
-
 置き場所はエージェントに合わせる（Claude Code なら `.claude/rules/`、Codex なら `AGENTS.md` から参照するなど）。
 
-本文の先頭に規約バージョンの行がある。手元の写しがどの版かはそこで分かるので、[releases](https://github.com/tomoemon/go-decision-pattern/releases) と見比べて、上がっていれば取り込み直す。配布元との差分も同じ URL で見られる。
+この取り込み方は版を固定しない。main を取るので、[releases](https://github.com/tomoemon/go-decision-pattern/releases) にまだ出ていない変更を含むことがある。本文の先頭の規約バージョンの行は、その本文がどの版として切られるかを示すので、releases より先の番号になっていることもある。追従は取り込み直すだけでよく、版で固定したいならツールを入れて `go.mod` に持たせる（下記）。
+
+配布元との差分は、取り込みに使ったのと同じ URL で見られる。
 
 ```sh
 diff <(curl -sL https://raw.githubusercontent.com/tomoemon/go-decision-pattern/main/rule/decision-pattern.md) \
      .claude/rules/decision-pattern.md
 ```
 
-差分には、写しを書き換えた分と、取り込んだ後に配布元で変わった分の両方が出る。どちらかだけを見たいなら版を固定する取り込み方にする。
+出るのは、写しを書き換えた分と、取り込んだ後に配布元で変わった分の両方。前者だけを見たいなら版を固定する取り込み方にする。
 
 対象を絞るなら frontmatter を足す。無いとリポジトリ全体向けの指示として扱われ、Decision と無関係な作業でも読み込まれる。
 
