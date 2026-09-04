@@ -202,7 +202,7 @@ func entryLabels(d *Decision, fn string) []string {
 	edges := entryEdges(d, fn)
 	labels := make([]string, 0, len(edges))
 	for _, e := range edges {
-		labels = append(labels, e.Label)
+		labels = append(labels, guardsLabel(e.Guards))
 	}
 	return labels
 }
@@ -218,7 +218,7 @@ func entryRoutes(d *Decision, fn string) []string {
 		for _, g := range e.Guards {
 			arms = append(arms, g.Arm)
 		}
-		routes = append(routes, e.Label+" | "+strings.Join(arms, "/")+" -> "+e.To)
+		routes = append(routes, guardsLabel(e.Guards)+" | "+strings.Join(arms, "/")+" -> "+e.To)
 	}
 	return routes
 }

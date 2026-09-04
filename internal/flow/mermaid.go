@@ -53,13 +53,13 @@ func writeStateFlow(b *strings.Builder, d *Decision) {
 				fmt.Fprintf(b, "  %s --> %s\n", start, e.To)
 				continue
 			}
-			fmt.Fprintf(b, "  %s -- \"%s\" --> %s\n", start, escape(e.Label), e.To)
+			fmt.Fprintf(b, "  %s -- \"%s\" --> %s\n", start, escape(guardsLabel(e.Guards)), e.To)
 		}
 	}
 	writeStateNodes(b, d)
 	for _, n := range d.Nodes {
 		for _, e := range n.Edges {
-			fmt.Fprintf(b, "  %s -- \"%s\" --> %s\n", n.ID, escape(e.Label), e.To)
+			fmt.Fprintf(b, "  %s -- \"%s\" --> %s\n", n.ID, escape(guardsLabel(e.Guards)), e.To)
 		}
 	}
 }

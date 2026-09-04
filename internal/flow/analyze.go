@@ -57,10 +57,10 @@ type Guard struct {
 	Arm      string    // 枝の名前。yes / no、または case の値
 }
 
-// Edge は状態遷移。Label は遷移を発生させた分岐条件のソース。
+// Edge は状態遷移。表示用のラベルは Guards から guardsLabel で導く。
+// 同じものをフィールドにも持つと、片方だけ更新される余地が残る。
 type Edge struct {
 	To     string
-	Label  string
 	Guards []Guard
 }
 
@@ -653,10 +653,10 @@ func (a *analyzer) typeSwitchFallthroughGuards(sw *ast.TypeSwitchStmt) []Guard {
 // switchGuard は case 節が選ばれたことを表す Guard を作る。
 func (a *analyzer) switchGuard(sw *ast.SwitchStmt, cc *ast.CaseClause) Guard {
 	g := a.caseDecision(sw, cc)
-	g.Text = a.caseLabel(sw.Tag, cc)
-	g.Arm = "yes"
+	// タグなしの case は判断そのものが条件なので、Subject をそのまま使える。
+	g.Text, g.Arm = g.Subject, "yes"
 	if g.IsSwitch {
-		g.Arm = a.caseLabel(nil, cc) // タグを外した、値だけのラベル
+		g.Text, g.Arm = a.caseLabel(sw.Tag, cc), a.caseLabel(nil, cc) // 枝はタグを外した値だけ
 	}
 	return g
 }
@@ -936,18 +936,18 @@ func cloneGuards(g []Guard) []Guard {
 }
 
 func (a *analyzer) addEdge(from *Node, r returnSite) {
-	label := guardsLabel(r.guards)
 	if r.typ == nil {
 		a.warnf("%s の return が静的に解決できない: %s", from.Type, r.unknown)
 		return
 	}
 	to := a.stateNode(r.typ, r.lit)
+	label := guardsLabel(r.guards)
 	for _, e := range from.Edges {
-		if e.To == to.ID && e.Label == label {
+		if e.To == to.ID && guardsLabel(e.Guards) == label {
 			return
 		}
 	}
-	from.Edges = append(from.Edges, Edge{To: to.ID, Label: label, Guards: r.guards})
+	from.Edges = append(from.Edges, Edge{To: to.ID, Guards: r.guards})
 }
 
 // needNode は Need 状態のノードを返す。型ごとに 1 つ。
@@ -1093,7 +1093,6 @@ func (a *analyzer) decideParams(named *types.Named) []string {
 
 // findEntries は interface を返す非メソッド関数を開始点として集める。
 func (a *analyzer) findEntries() []Entry {
-	var entries []Entry
 	var fns []*types.Func
 	for fn := range a.plainFn {
 		sig, ok := fn.Type().(*types.Signature)
@@ -1106,7 +1105,11 @@ func (a *analyzer) findEntries() []Entry {
 		fns = append(fns, fn)
 	}
 	sort.Slice(fns, func(i, j int) bool { return fns[i].Name() < fns[j].Name() })
-	byFunc := map[*types.Func]Entry{}
+	type candidate struct {
+		fn    *types.Func
+		entry Entry
+	}
+	candidates := make([]candidate, 0, len(fns))
 	for _, fn := range fns {
 		entry := Entry{Func: fn.Name()}
 		for _, r := range a.collectReturns(a.plainFn[fn], nil, map[*types.Func]bool{}) {
@@ -1116,24 +1119,23 @@ func (a *analyzer) findEntries() []Entry {
 			}
 			entry.Edges = append(entry.Edges, Edge{
 				To:     a.stateNode(r.typ, r.lit).ID,
-				Label:  guardsLabel(r.guards),
 				Guards: r.guards,
 			})
 		}
 		if len(entry.Edges) > 0 {
-			byFunc[fn] = entry
+			candidates = append(candidates, candidate{fn: fn, entry: entry})
 		}
 	}
 	// 遷移の途中で中身を辿った関数は状態を返すヘルパーであって開始点ではない。
 	// 名前で判定すると、コンストラクタの命名から外れた瞬間に開始点が消える。
 	// inlined が埋まるのは上の走査中なので、ふるいにかけるのは走査を終えてから。
 	// 先に見ると、あとで辿られたヘルパーが開始点として残ってしまう。
-	for _, fn := range fns {
-		entry, ok := byFunc[fn]
-		if !ok || a.inlined[fn] {
+	entries := make([]Entry, 0, len(candidates))
+	for _, c := range candidates {
+		if a.inlined[c.fn] {
 			continue
 		}
-		entries = append(entries, entry)
+		entries = append(entries, c.entry)
 	}
 	return entries
 }

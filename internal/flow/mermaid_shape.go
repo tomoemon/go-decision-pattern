@@ -87,15 +87,15 @@ func newShapeGraph() *shapeGraph {
 // 連続する同じ分岐はまとめ、最後の枝名だけを辺のラベルにする。
 func (g *shapeGraph) addPath(from string, e Edge) {
 	prev, arm := from, ""
-	var prevQ *shapeDecision
 	for _, guard := range e.Guards {
 		q := g.decision(guard)
-		if q == prevQ {
+		// 判断の id は状態の id と重ならないので、直前が同じ判断かは id で分かる。
+		if q.id == prev {
 			arm = guard.Arm
 			continue
 		}
 		g.addEdge(prev, arm, q.id)
-		prev, arm, prevQ = q.id, guard.Arm, q
+		prev, arm = q.id, guard.Arm
 	}
 	g.addEdge(prev, arm, e.To)
 }
