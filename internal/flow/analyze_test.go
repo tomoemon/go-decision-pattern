@@ -235,6 +235,8 @@ func TestAnalyzeFallthroughGuards(t *testing.T) {
 		{"NewBranchNestedIf", "!(v < 0)"},
 		// 本体が default 付き switch で終わる if
 		{"NewBranchNestedSwitch", "!(v < 0)"},
+		// 本体が panic で終わる if
+		{"NewBranchPanic", "!(v < 0)"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.fn, func(t *testing.T) {

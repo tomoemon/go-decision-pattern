@@ -145,3 +145,12 @@ func NewBranchNestedSwitch(v int, k kind) BranchDecision {
 	}
 	return BranchNeedLow{f}
 }
+
+// NewBranchPanic は、if の本体が panic で終わる形。
+// panic も脱出なので、後続の return には !(v < 0) が乗る。
+func NewBranchPanic(v int) BranchDecision {
+	if v < 0 {
+		panic("negative")
+	}
+	return BranchNeedLow{branchFacts{Value: v}}
+}
