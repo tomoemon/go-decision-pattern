@@ -39,6 +39,17 @@ func NewBranchEarlyReturn(v int) BranchDecision {
 	return BranchNeedHigh{f}
 }
 
+// NewBranchElseIfNoElse は最後の else を書かず、続きを関数の末尾に置いた版。
+func NewBranchElseIfNoElse(v int) BranchDecision {
+	f := branchFacts{Value: v}
+	if v < 0 {
+		return BranchDecided{Reason: "negative"}
+	} else if v == 0 {
+		return BranchNeedLow{f}
+	}
+	return BranchNeedHigh{f}
+}
+
 // NewBranchSwitch はタグなし switch で書いた版。
 func NewBranchSwitch(v int) BranchDecision {
 	f := branchFacts{Value: v}
@@ -71,6 +82,28 @@ func NewBranchTagged(k kind, v int) BranchDecision {
 	return BranchDecided{Reason: "unknown"}
 }
 
+// NewBranchBreakInCase は case を break で抜ける。break は switch を出るだけなので、
+// switch の後ろへは kindA でも進む。全 case の否定は乗せられない。
+func NewBranchBreakInCase(k kind, v int) BranchDecision {
+	f := branchFacts{Value: v}
+	switch k {
+	case kindA:
+		break
+	case kindB:
+		return BranchNeedHigh{f}
+	}
+	return BranchNeedLow{f}
+}
+
+// NewBranchNestedEq は括弧の内側に == がある条件。否定するのは外側の演算子だけ。
+func NewBranchNestedEq(a, b, c bool, v int) BranchDecision {
+	f := branchFacts{Value: v}
+	if (a == b) != c {
+		return BranchDecided{Reason: "mismatch"}
+	}
+	return BranchNeedLow{f}
+}
+
 func (s BranchNeedLow) Decide(ok bool) BranchDecision {
 	if !ok {
 		return BranchDecided{Reason: "low-ng"}
@@ -83,4 +116,32 @@ func (s BranchNeedHigh) Decide(ok bool) BranchDecision {
 		return BranchDecided{Reason: "high-ok"}
 	}
 	return BranchDecided{Reason: "high-ng"}
+}
+
+// NewBranchNestedIf は、if の本体が if / else で終わる形。
+// 内側で必ず脱出するので、後続の return には !(v < 0) が乗る。
+func NewBranchNestedIf(v int, ok bool) BranchDecision {
+	f := branchFacts{Value: v}
+	if v < 0 {
+		if ok {
+			return BranchDecided{Reason: "neg-ok"}
+		} else {
+			return BranchDecided{Reason: "neg-ng"}
+		}
+	}
+	return BranchNeedHigh{f}
+}
+
+// NewBranchNestedSwitch は、if の本体が default 付き switch で終わる形。
+func NewBranchNestedSwitch(v int, k kind) BranchDecision {
+	f := branchFacts{Value: v}
+	if v < 0 {
+		switch k {
+		case kindA:
+			return BranchDecided{Reason: "neg-a"}
+		default:
+			return BranchDecided{Reason: "neg-other"}
+		}
+	}
+	return BranchNeedLow{f}
 }

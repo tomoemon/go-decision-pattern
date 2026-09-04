@@ -1,6 +1,7 @@
 package flow
 
 import (
+	"slices"
 	"strings"
 	"testing"
 )
@@ -185,71 +186,113 @@ func analyzeDir(t *testing.T, dir string) *Decision {
 	return decisions[0]
 }
 
+// entryLabels は指定した入口関数から出る遷移のラベルを返す。
+// Render 全体を文字列検索すると、別の入口が出した同じラベルを拾ってしまう。
+func entryLabels(d *Decision, fn string) []string {
+	for _, e := range d.Entries {
+		if e.Func != fn {
+			continue
+		}
+		labels := make([]string, 0, len(e.Edges))
+		for _, edge := range e.Edges {
+			labels = append(labels, edge.Label)
+		}
+		return labels
+	}
+	return nil
+}
+
 // 同じ分岐は、どの構文で書いても同じ図になってほしい。
 // 図に出したいのは判断の流れであって、関数の書き方ではないため。
 func TestAnalyzeBranchingSyntaxesAgree(t *testing.T) {
 	d := analyzeDir(t, "./testdata/branching")
 
-	labels := map[string][]string{}
-	for _, e := range d.Entries {
-		for _, edge := range e.Edges {
-			labels[e.Func] = append(labels[e.Func], edge.Label+" -> "+edge.To)
-		}
-	}
-
-	want := labels["NewBranchElseIf"]
+	want := entryLabels(d, "NewBranchElseIf")
 	if len(want) == 0 {
-		t.Fatalf("NewBranchElseIf の遷移が取れていない: %+v", labels)
+		t.Fatalf("NewBranchElseIf の遷移が取れていない")
 	}
-	for _, name := range []string{"NewBranchEarlyReturn", "NewBranchSwitch"} {
-		got := labels[name]
-		if strings.Join(got, "\n") != strings.Join(want, "\n") {
-			t.Errorf("%s が if/else if 版と一致しない\ngot:\n%s\nwant:\n%s",
-				name, strings.Join(got, "\n"), strings.Join(want, "\n"))
+	for _, fn := range []string{"NewBranchEarlyReturn", "NewBranchSwitch", "NewBranchElseIfNoElse"} {
+		if got := entryLabels(d, fn); !slices.Equal(got, want) {
+			t.Errorf("%s が if/else if 版と一致しない\ngot:  %v\nwant: %v", fn, got, want)
 		}
 	}
 }
 
-// early return を連ねた場合、後続の return には手前の条件の否定が乗る。
-// 乗らないと、排他な分岐が並列に見える図になる。
-func TestAnalyzeEarlyReturnCarriesNegation(t *testing.T) {
+// 全枝が脱出する分岐を抜けた先には、どの枝にも入らなかったという条件が乗る。
+// 乗らないと、排他な分岐が並列に並んだ図になる。
+func TestAnalyzeFallthroughGuards(t *testing.T) {
 	d := analyzeDir(t, "./testdata/branching")
-	out := Render(d)
 
-	for _, want := range []string{
-		`-- "!(v #lt; 0) かつ v == 0" -->`,
-		`-- "!(v #lt; 0) かつ v != 0" -->`,
-	} {
-		if !strings.Contains(out, want) {
-			t.Errorf("出力に %q が含まれない\n---\n%s", want, out)
+	tests := []struct {
+		fn   string
+		want string
+	}{
+		{"NewBranchEarlyReturn", "!(v < 0) かつ v != 0"},
+		{"NewBranchSwitch", "!(v < 0) かつ v != 0"},
+		// default を持たない switch を抜けた先
+		{"NewBranchTagged", "k != kindA かつ k != kindB"},
+		// 本体が if / else で終わる if。内側で必ず脱出する
+		{"NewBranchNestedIf", "!(v < 0)"},
+		// 本体が default 付き switch で終わる if
+		{"NewBranchNestedSwitch", "!(v < 0)"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.fn, func(t *testing.T) {
+			if got := entryLabels(d, tt.fn); !slices.Contains(got, tt.want) {
+				t.Errorf("遷移に %q が無い: %v", tt.want, got)
+			}
+		})
+	}
+}
+
+// タグ付き switch の default には、先行 case の否定が条件として乗る。
+// "default" という表示語をガードに積むと、他の条件と「かつ」で連なって読めなくなる。
+func TestAnalyzeDefaultClauseCarriesNegation(t *testing.T) {
+	got := entryLabels(analyzeDir(t, "./testdata/branching"), "NewBranchNestedSwitch")
+	if !slices.Contains(got, "v < 0 かつ k != kindA") {
+		t.Errorf("default の条件が先行 case の否定になっていない: %v", got)
+	}
+	for _, l := range got {
+		if strings.Contains(l, "default") {
+			t.Errorf("表示語がガードに積まれている: %q", l)
 		}
 	}
 }
 
-// default を持たない switch を抜けた先は「どの case にも当たらなかった場合」なので、
-// 全 case の否定が乗る。
-func TestAnalyzeSwitchFallthroughCarriesNegation(t *testing.T) {
-	d := analyzeDir(t, "./testdata/branching")
-	out := Render(d)
+// case を break で抜けると switch の後ろへ進む経路が残るので、
+// 全 case の否定は乗せられない。乗せると通る経路が図から消える。
+func TestAnalyzeBreakInCaseKeepsFallthroughPath(t *testing.T) {
+	got := entryLabels(analyzeDir(t, "./testdata/branching"), "NewBranchBreakInCase")
+	for _, label := range got {
+		if strings.Contains(label, "k != kindA") {
+			t.Errorf("break で抜ける case の否定が乗っている: %q", label)
+		}
+	}
+	if !slices.Contains(got, "それ以外") {
+		t.Errorf("switch の後ろへの遷移が条件無しになっていない: %v", got)
+	}
+}
 
-	want := `-- "k != kindA かつ k != kindB" -->`
-	if !strings.Contains(out, want) {
-		t.Errorf("出力に %q が含まれない\n---\n%s", want, out)
+// 否定は式の構造で行う。文字列で見ると括弧や引数の内側の演算子を掴んでしまう。
+func TestAnalyzeNegatesOuterOperatorOnly(t *testing.T) {
+	got := entryLabels(analyzeDir(t, "./testdata/branching"), "NewBranchNestedEq")
+	if !slices.Contains(got, "(a == b) == c") {
+		t.Errorf("外側の演算子だけを反転していない: %v", got)
+	}
+	for _, l := range got {
+		if strings.Contains(l, "(a != b)") {
+			t.Errorf("括弧の内側の演算子を反転している: %q", l)
+		}
 	}
 }
 
 // 状態名から interface 名の接頭辞を削る処理が、語の途中で切ってはいけない。
 // D interface に対して Denied が enied になっていた。
 func TestAnalyzeKeepsStateNameWhenPrefixIsNotApplicable(t *testing.T) {
-	d := analyzeDir(t, "./testdata/shortname")
-	out := Render(d)
-
+	out := Render(analyzeDir(t, "./testdata/shortname"))
 	for _, want := range []string{"NeedCheck", "Denied", "Allowed"} {
 		if !strings.Contains(out, want) {
 			t.Errorf("状態名 %q が出力に無い\n---\n%s", want, out)
 		}
-	}
-	if strings.Contains(out, "enied") && !strings.Contains(out, "Denied") {
-		t.Errorf("接頭辞の除去で状態名が壊れている\n---\n%s", out)
 	}
 }

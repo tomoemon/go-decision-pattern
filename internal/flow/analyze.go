@@ -9,8 +9,6 @@ import (
 	"go/types"
 	"sort"
 	"strings"
-	"unicode"
-	"unicode/utf8"
 
 	"golang.org/x/tools/go/packages"
 )
@@ -220,13 +218,7 @@ func (a *analyzer) analyzeInterface(ts *ast.TypeSpec, doc *ast.CommentGroup) *De
 	}
 	a.iface = iface
 	a.ifaceObj = obj
-	// 規約上 interface は XxxDecision。そうでない名前のときに接頭辞を削ると
-	// D interface に対して Denied → enied のように型名が壊れる。
-	if n := ts.Name.Name; strings.HasSuffix(n, "Decision") {
-		a.prefix = strings.TrimSuffix(n, "Decision")
-	} else {
-		a.prefix = ""
-	}
+	a.prefix = strings.TrimSuffix(ts.Name.Name, "Decision")
 
 	states := a.findStates()
 	if len(states) == 0 {
@@ -504,118 +496,211 @@ func (a *analyzer) calleeFunc(call *ast.CallExpr) *types.Func {
 func (a *analyzer) walkStmts(stmts []ast.Stmt, guards []string, emit func(*ast.ReturnStmt, []string)) {
 	for _, stmt := range stmts {
 		a.walkStmt(stmt, guards, emit)
-		// early return する if は、後続の文が「その条件でなかった場合」になる。
-		// else を書いた場合と同じ否定条件を、以降の文へ伝播させる。
-		if ifs, ok := stmt.(*ast.IfStmt); ok && ifs.Else == nil && terminates(ifs.Body) {
-			cond := a.src(ifs.Cond)
-			if ifs.Init != nil {
-				cond = a.src(ifs.Init) + "; " + cond
-			}
-			guards = append(cloneGuards(guards), negate(cond))
-		}
-		// default を持たず、全 case が脱出する switch を抜けた先は
-		// 「どの case にも当たらなかった場合」になる。その条件を伝播させる。
-		if sw, ok := stmt.(*ast.SwitchStmt); ok {
-			if negs, ok := a.switchFallthroughGuards(sw); ok {
-				guards = append(cloneGuards(guards), negs...)
-			}
+		if negs := a.guardsAfter(stmt); len(negs) > 0 {
+			next := make([]string, 0, len(guards)+len(negs))
+			guards = append(append(next, guards...), negs...)
 		}
 	}
 }
 
-// switchFallthroughGuards は、switch を抜けた先に積むべき否定条件を返す。
-// default 節があるか、脱出しない case があれば false。
-func (a *analyzer) switchFallthroughGuards(sw *ast.SwitchStmt) ([]string, bool) {
+// guardsAfter は stmt を通過して次の文へ進んだときに成り立つ条件を返す。
+// 通過する経路が無い、または条件で表せないときは nil。
+//
+// 分岐の全枝が脱出するなら、その後ろに書かれた文は「どの枝にも入らなかった場合」
+// にあたる。else を書いたときに乗る否定条件と同じものを、以降の文へ伝播させる。
+//
+// 型 switch は対象外。Decision の生成側では使われないため。
+func (a *analyzer) guardsAfter(stmt ast.Stmt) []string {
+	switch s := stmt.(type) {
+	case *ast.IfStmt:
+		return a.ifFallthroughGuards(s)
+	case *ast.SwitchStmt:
+		return a.switchFallthroughGuards(s)
+	}
+	return nil
+}
+
+// ifFallthroughGuards は if 連鎖を抜けた先に積むべき否定条件を返す。
+// if / else if の枝がすべて脱出するときだけ、全条件の否定を返す。
+// 途中に脱出しない枝があると抜けた先へ複数の経路が合流するので、条件で表せない。
+func (a *analyzer) ifFallthroughGuards(ifs *ast.IfStmt) []string {
+	var negs []string
+	for {
+		if !terminates(ifs.Body, true) {
+			return nil
+		}
+		// else 側に乗る条件と、連鎖を抜けた先に乗る条件は同じもの。
+		negs = append(negs, a.condLabel(ifs.Init, a.negateExpr(ifs.Cond)))
+		switch els := ifs.Else.(type) {
+		case nil:
+			return negs
+		case *ast.IfStmt:
+			ifs = els
+		case *ast.BlockStmt:
+			// 最後の else も脱出するなら if 連鎖の後ろには到達しない。
+			if terminates(els, true) {
+				return nil
+			}
+			return negs
+		default:
+			return nil
+		}
+	}
+}
+
+// switchFallthroughGuards は switch を抜けた先に積むべき否定条件を返す。
+// default 節があるか、脱出しない case があれば nil。
+func (a *analyzer) switchFallthroughGuards(sw *ast.SwitchStmt) []string {
 	var negs []string
 	for _, c := range sw.Body.List {
 		cc, ok := c.(*ast.CaseClause)
 		if !ok {
-			return nil, false
+			return nil
 		}
 		if len(cc.List) == 0 { // default があるなら switch を素通りしない
-			return nil, false
+			return nil
 		}
-		if !terminates(&ast.BlockStmt{List: cc.Body}) {
-			return nil, false
+		// case の中の break は switch を出るだけなので、抜けた先へ進む経路が
+		// 残る。脱出とは見なせない。
+		if !terminatesList(cc.Body, false) {
+			return nil
 		}
-		negs = append(negs, negateCase(cc, a, sw.Tag))
+		negs = append(negs, a.negateCase(cc, sw.Tag))
 	}
-	return negs, len(negs) > 0
+	return negs
 }
 
-// terminates はブロックが必ず脱出するかを判定する（簡易版）。
-func terminates(b *ast.BlockStmt) bool {
-	if b == nil || len(b.List) == 0 {
+// terminates はブロックが必ず脱出するかを判定する。Go 仕様の terminating
+// statement のうち、判定の中に現れうるものを実装する。
+//
+// 実装しないもの: goto、ラベル付き break の追跡、条件を持たない for。
+// いずれも判定関数の中では使われないため、false を返して伝播を諦める。
+// 諦めた側に倒すと、ラベルが付かないだけで嘘は出ない。
+//
+// allowBreak は break を脱出と見なすかどうか。囲みが for なら break でその先へ
+// 進まないが、switch の case なら break は switch を出るだけなので数えられない。
+func terminates(b *ast.BlockStmt, allowBreak bool) bool {
+	if b == nil {
 		return false
 	}
-	switch last := b.List[len(b.List)-1].(type) {
+	return terminatesList(b.List, allowBreak)
+}
+
+// terminatesList は文の並びが必ず脱出するかを判定する。末尾の 1 文で決まる。
+func terminatesList(list []ast.Stmt, allowBreak bool) bool {
+	if len(list) == 0 {
+		return false
+	}
+	return terminatesStmt(list[len(list)-1], allowBreak)
+}
+
+func terminatesStmt(stmt ast.Stmt, allowBreak bool) bool {
+	switch s := stmt.(type) {
 	case *ast.ReturnStmt:
 		return true
 	case *ast.BranchStmt:
-		return last.Tok != token.GOTO
+		return s.Tok == token.CONTINUE || (s.Tok == token.BREAK && allowBreak)
 	case *ast.ExprStmt:
-		if call, ok := last.X.(*ast.CallExpr); ok {
-			if id, ok := call.Fun.(*ast.Ident); ok && id.Name == "panic" {
-				return true
-			}
+		call, ok := s.X.(*ast.CallExpr)
+		if !ok {
+			return false
 		}
+		id, ok := call.Fun.(*ast.Ident)
+		return ok && id.Name == "panic"
 	case *ast.BlockStmt:
-		return terminates(last)
+		return terminates(s, allowBreak)
+	case *ast.LabeledStmt:
+		return terminatesStmt(s.Stmt, allowBreak)
+	case *ast.IfStmt:
+		// else が無ければ、条件が偽のときに素通りする。
+		if s.Else == nil {
+			return false
+		}
+		return terminates(s.Body, allowBreak) && terminatesStmt(s.Else, allowBreak)
+	case *ast.SwitchStmt:
+		return terminatesClauses(s.Body, true)
+	case *ast.TypeSwitchStmt:
+		return terminatesClauses(s.Body, true)
+	case *ast.SelectStmt:
+		// select は必ずどれかの通信が選ばれるので default は要らない。
+		return terminatesClauses(s.Body, false)
 	}
 	return false
 }
 
+// terminatesClauses は switch / select の全節が脱出するかを判定する。
+// needDefault が真なら、どの節にも当たらない経路を塞ぐために default が要る。
+func terminatesClauses(body *ast.BlockStmt, needDefault bool) bool {
+	if body == nil || len(body.List) == 0 {
+		return false
+	}
+	hasDefault := false
+	for _, c := range body.List {
+		var list []ast.Stmt
+		switch cc := c.(type) {
+		case *ast.CaseClause:
+			hasDefault = hasDefault || len(cc.List) == 0
+			list = cc.Body
+		case *ast.CommClause:
+			hasDefault = hasDefault || cc.Comm == nil
+			list = cc.Body
+		default:
+			return false
+		}
+		// 節の中の break は switch / select を出るだけで、脱出ではない。
+		if !terminatesList(list, false) {
+			return false
+		}
+	}
+	return hasDefault || !needDefault
+}
+
 // negateCase は case 節の条件全体を否定する。case A, B: は A || B なので、
 // 否定は !(A) かつ !(B) になる。
-func negateCase(cc *ast.CaseClause, a *analyzer, tag ast.Expr) string {
+func (a *analyzer) negateCase(cc *ast.CaseClause, tag ast.Expr) string {
 	parts := make([]string, 0, len(cc.List))
 	for _, e := range cc.List {
+		cond := e
 		if tag != nil {
-			parts = append(parts, a.src(tag)+" != "+a.src(e))
-		} else {
-			parts = append(parts, negate(a.src(e)))
+			cond = &ast.BinaryExpr{X: tag, Op: token.EQL, Y: e}
 		}
+		parts = append(parts, a.negateExpr(cond))
 	}
 	return strings.Join(parts, " かつ ")
 }
 
-// negate は条件を否定する。二重否定を畳み、比較演算子は反転させて読みやすくする。
-func negate(cond string) string {
-	if strings.HasPrefix(cond, "!(") && strings.HasSuffix(cond, ")") {
-		return cond[2 : len(cond)-1]
-	}
-	if strings.HasPrefix(cond, "!") && !strings.ContainsAny(cond[1:], " &|") {
-		return cond[1:]
-	}
-	// x == y / x != y は演算子を反転したほうが読める。
-	// 「かつ」で連結された複合条件は対象外（ド・モルガンを適用できないため）。
-	if !strings.Contains(cond, " かつ ") && !strings.ContainsAny(cond, "&|") {
-		if i := strings.Index(cond, " == "); i >= 0 {
-			return cond[:i] + " != " + cond[i+4:]
+// negateExpr は条件を否定した表示用の文字列を返す。二重否定を畳み、
+// 比較演算子は反転させて読みやすくする。
+// 判定は式の構造で行う。文字列で見ると "(a == b) != c" のように
+// 括弧や引数の内側の演算子を掴んでしまい、別の条件になってしまう。
+func (a *analyzer) negateExpr(e ast.Expr) string {
+	switch x := ast.Unparen(e).(type) {
+	case *ast.UnaryExpr:
+		if x.Op == token.NOT {
+			return a.src(ast.Unparen(x.X))
 		}
-		if i := strings.Index(cond, " != "); i >= 0 {
-			return cond[:i] + " == " + cond[i+4:]
+	case *ast.BinaryExpr:
+		switch x.Op {
+		case token.EQL:
+			return a.src(x.X) + " != " + a.src(x.Y)
+		case token.NEQ:
+			return a.src(x.X) + " == " + a.src(x.Y)
 		}
+	case *ast.Ident, *ast.SelectorExpr, *ast.CallExpr, *ast.IndexExpr:
+		// 単項の ! を前に置いても意味が変わらない形。括弧は要らない。
+		return "!" + a.src(x)
 	}
-	// 識別子やセレクタ式なら括弧は要らない。
-	if isSimpleOperand(cond) {
-		return "!" + cond
-	}
-	return "!(" + cond + ")"
+	return "!(" + a.src(e) + ")"
 }
 
-// isSimpleOperand は cond が識別子かセレクタ式かを判定する。
-func isSimpleOperand(cond string) bool {
-	if cond == "" {
-		return false
+// condLabel は if の条件を、初期化節があればそれも添えてラベルにする。
+// 初期化付きの if は条件だけ出すと "ok" のような無意味なラベルになる。
+// 何を評価した ok なのかは初期化節にしか書かれていない。
+func (a *analyzer) condLabel(init ast.Stmt, cond string) string {
+	if init == nil {
+		return cond
 	}
-	for _, r := range cond {
-		if r == '.' || r == '_' || unicode.IsLetter(r) || unicode.IsDigit(r) {
-			continue
-		}
-		return false
-	}
-	return true
+	return a.src(init) + "; " + cond
 }
 
 func (a *analyzer) walkStmt(stmt ast.Stmt, guards []string, emit func(*ast.ReturnStmt, []string)) {
@@ -625,15 +710,11 @@ func (a *analyzer) walkStmt(stmt ast.Stmt, guards []string, emit func(*ast.Retur
 	case *ast.BlockStmt:
 		a.walkStmts(s.List, guards, emit)
 	case *ast.IfStmt:
-		cond := a.src(s.Cond)
-		// 初期化付きの if は条件だけ出すと "ok" のような無意味なラベルになる。
-		// 何を評価した ok なのかは初期化節にしか書かれていない。
-		if s.Init != nil {
-			cond = a.src(s.Init) + "; " + cond
-		}
+		cond := a.condLabel(s.Init, a.src(s.Cond))
 		a.walkStmts(s.Body.List, append(cloneGuards(guards), cond), emit)
 		if s.Else != nil {
-			a.walkStmt(s.Else, append(cloneGuards(guards), negate(cond)), emit)
+			neg := a.condLabel(s.Init, a.negateExpr(s.Cond))
+			a.walkStmt(s.Else, append(cloneGuards(guards), neg), emit)
 		}
 	case *ast.ForStmt:
 		a.walkStmt(s.Body, guards, emit)
@@ -649,22 +730,19 @@ func (a *analyzer) walkStmt(stmt ast.Stmt, guards []string, emit func(*ast.Retur
 				continue
 			}
 			g := cloneGuards(guards)
+			if len(cc.List) == 0 {
+				// default は「どの case にも当たらなかった場合」。
+				// タグの有無にかかわらず、先行 case の否定がその条件になる。
+				a.walkStmts(cc.Body, append(g, prior...), emit)
+				continue
+			}
+			// タグなし switch は if / else if と同義なので、先行 case の否定も
+			// 積む。タグ付きは値で排他になるので case の条件だけでよい。
 			if s.Tag == nil {
 				g = append(g, prior...)
 			}
-			if len(cc.List) == 0 { // default
-				if s.Tag == nil {
-					a.walkStmts(cc.Body, g, emit)
-				} else {
-					a.walkStmts(cc.Body, append(g, "default"), emit)
-				}
-				continue
-			}
-			label := a.caseLabel(s.Tag, cc)
-			a.walkStmts(cc.Body, append(cloneGuards(g), label), emit)
-			if s.Tag == nil {
-				prior = append(prior, negateCase(cc, a, s.Tag))
-			}
+			a.walkStmts(cc.Body, append(g, a.caseLabel(s.Tag, cc)), emit)
+			prior = append(prior, a.negateCase(cc, s.Tag))
 		}
 	case *ast.TypeSwitchStmt:
 		for _, c := range s.Body.List {
@@ -977,11 +1055,10 @@ func (a *analyzer) checkUnreachable(d *Decision) {
 
 func (a *analyzer) shortName(name string) string {
 	if a.prefix != "" && name != a.prefix {
-		if trimmed := strings.TrimPrefix(name, a.prefix); trimmed != "" && trimmed != name {
-			// 語の途中で切れていないことを確かめる。
-			if r, _ := utf8.DecodeRuneInString(trimmed); unicode.IsUpper(r) {
-				return trimmed
-			}
+		// 語の途中で切れていないことを確かめる。interface が D なら Denied が
+		// enied に、PublishDecision なら Publishing が ing になってしまう。
+		if trimmed := strings.TrimPrefix(name, a.prefix); trimmed != name && token.IsExported(trimmed) {
+			return trimmed
 		}
 	}
 	return name
