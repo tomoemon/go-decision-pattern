@@ -18,6 +18,7 @@ import (
 	"flag"
 	"fmt"
 	"os"
+	"strings"
 
 	"github.com/tomoemon/go-decision-pattern/internal/flow"
 	"github.com/tomoemon/go-decision-pattern/rule"
@@ -64,8 +65,14 @@ func runFlow(args []string) error {
 	outDir := fs.String("o", "", "出力先ディレクトリ。省略時は標準出力にまとめて書く")
 	dir := fs.String("C", ".", "解析を実行する起点ディレクトリ")
 	strict := fs.Bool("strict", false, "警告が 1 件でもあれば終了コード 1 にする")
+	shapeName := fs.String("shape", "state", "図の描き方。state は状態だけをノードにする。decision は判断もノードにする")
 	if err := fs.Parse(args); err != nil {
 		return err
+	}
+
+	render, ok := flow.Renderers[*shapeName]
+	if !ok {
+		return fmt.Errorf("-shape は %s のいずれか: %s", strings.Join(flow.RendererNames(), " か "), *shapeName)
 	}
 
 	patterns := fs.Args()
@@ -82,8 +89,8 @@ func runFlow(args []string) error {
 	}
 
 	if *outDir == "" {
-		flow.WriteStdout(os.Stdout, decisions)
-	} else if err := flow.WriteFiles(*outDir, decisions, os.Stderr); err != nil {
+		flow.WriteStdout(os.Stdout, decisions, render)
+	} else if err := flow.WriteFiles(*outDir, decisions, render, os.Stderr); err != nil {
 		return err
 	}
 
