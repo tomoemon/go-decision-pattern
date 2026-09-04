@@ -566,8 +566,13 @@ func (a *analyzer) ifFallthroughGuards(ifs *ast.IfStmt) []Guard {
 
 // switchFallthroughGuards は switch を抜けた先に積むべき否定条件を返す。
 // default 節があるか、脱出しない case があれば nil。
+//
+// case ごとに 1 つずつ返す。タグなし switch は case ごとに別の判断として扱って
+// いるので、まとめて 1 つの Guard にすると、抜けた先だけがどの判断にも属さない
+// 宙に浮いた枝になる。タグ付きでは全 case が同じ判断に属するため、同じ Origin の
+// Guard が並ぶ形になる。
 func (a *analyzer) switchFallthroughGuards(sw *ast.SwitchStmt) []Guard {
-	var negs []string
+	var negs []Guard
 	for _, c := range sw.Body.List {
 		cc, ok := c.(*ast.CaseClause)
 		if !ok {
@@ -581,17 +586,9 @@ func (a *analyzer) switchFallthroughGuards(sw *ast.SwitchStmt) []Guard {
 		if !terminatesList(cc.Body, false) {
 			return nil
 		}
-		negs = append(negs, a.negateCase(cc, sw.Tag))
+		negs = append(negs, a.switchNegGuard(sw, cc))
 	}
-	if len(negs) == 0 {
-		return nil
-	}
-	// switch を抜けた先は「どの case にも当たらなかった場合」で、分岐としては
-	// 1 つの枝。Guard も 1 つにまとめる。
-	last := sw.Body.List[len(sw.Body.List)-1].(*ast.CaseClause)
-	g := a.caseDecision(sw, last)
-	g.Text, g.Arm = joinConds(negs), "それ以外"
-	return []Guard{g}
+	return negs
 }
 
 // ifDecision / caseDecision は「どの判断に属するか」だけを決める。
@@ -645,7 +642,7 @@ func (a *analyzer) typeSwitchFallthroughGuards(sw *ast.TypeSwitchStmt) []Guard {
 	}
 	subject := a.typeSwitchSubject(sw)
 	return []Guard{{
-		Text:     subject + " は " + joinConds(cases) + " のいずれでもない",
+		Text:     subject + " は " + strings.Join(cases, " / ") + " のいずれでもない",
 		Origin:   sw.Pos(),
 		Subject:  subject,
 		IsSwitch: true,

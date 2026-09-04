@@ -207,17 +207,33 @@ func entryLabels(d *Decision, fn string) []string {
 	return labels
 }
 
+// entryRoutes は入口から出る経路を「条件 | 通った枝 -> 行き先」の形で返す。
+// 状態遷移図のラベル (条件) と判断ノード形式の枝の両方を 1 つの文字列に含めるので、
+// これが一致すればどちらの形式でも同じ図になる。
+func entryRoutes(d *Decision, fn string) []string {
+	edges := entryEdges(d, fn)
+	routes := make([]string, 0, len(edges))
+	for _, e := range edges {
+		arms := make([]string, 0, len(e.Guards))
+		for _, g := range e.Guards {
+			arms = append(arms, g.Arm)
+		}
+		routes = append(routes, e.Label+" | "+strings.Join(arms, "/")+" -> "+e.To)
+	}
+	return routes
+}
+
 // 同じ分岐は、どの構文で書いても同じ図になってほしい。
 // 図に出したいのは判断の流れであって、関数の書き方ではないため。
 func TestAnalyzeBranchingSyntaxesAgree(t *testing.T) {
 	d := analyzeDir(t, "./testdata/branching")
 
-	want := entryLabels(d, "NewBranchElseIf")
+	want := entryRoutes(d, "NewBranchElseIf")
 	if len(want) == 0 {
 		t.Fatalf("NewBranchElseIf の遷移が取れていない")
 	}
 	for _, fn := range []string{"NewBranchEarlyReturn", "NewBranchSwitch", "NewBranchElseIfNoElse"} {
-		if got := entryLabels(d, fn); !slices.Equal(got, want) {
+		if got := entryRoutes(d, fn); !slices.Equal(got, want) {
 			t.Errorf("%s が if/else if 版と一致しない\ngot:  %v\nwant: %v", fn, got, want)
 		}
 	}

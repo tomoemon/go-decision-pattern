@@ -154,3 +154,16 @@ func NewBranchPanic(v int) BranchDecision {
 	}
 	return BranchNeedLow{branchFacts{Value: v}}
 }
+
+// NewBranchTaglessNoDefault はタグなし switch で default を持たない形。
+// 抜けた先には、どの case にも当たらなかったという条件が乗る。
+func NewBranchTaglessNoDefault(v int) BranchDecision {
+	f := branchFacts{Value: v}
+	switch {
+	case v < 0:
+		return BranchDecided{Reason: "negative"}
+	case v == 0:
+		return BranchNeedLow{f}
+	}
+	return BranchNeedHigh{f}
+}
