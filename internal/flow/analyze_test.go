@@ -186,20 +186,25 @@ func analyzeDir(t *testing.T, dir string) *Decision {
 	return decisions[0]
 }
 
+// entryEdges は指定した入口関数から出る遷移を返す。
+func entryEdges(d *Decision, fn string) []Edge {
+	for _, e := range d.Entries {
+		if e.Func == fn {
+			return e.Edges
+		}
+	}
+	return nil
+}
+
 // entryLabels は指定した入口関数から出る遷移のラベルを返す。
 // Render 全体を文字列検索すると、別の入口が出した同じラベルを拾ってしまう。
 func entryLabels(d *Decision, fn string) []string {
-	for _, e := range d.Entries {
-		if e.Func != fn {
-			continue
-		}
-		labels := make([]string, 0, len(e.Edges))
-		for _, edge := range e.Edges {
-			labels = append(labels, edge.Label)
-		}
-		return labels
+	edges := entryEdges(d, fn)
+	labels := make([]string, 0, len(edges))
+	for _, e := range edges {
+		labels = append(labels, e.Label)
 	}
-	return nil
+	return labels
 }
 
 // 同じ分岐は、どの構文で書いても同じ図になってほしい。

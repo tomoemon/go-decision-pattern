@@ -91,6 +91,46 @@ flowchart TD
 - 同じ `PublishFailed` でも `Err` が違えば別ノードになり、どの条件でどの結末に着くかが残る
 - `PublishDecided` のリテラルは `publishFactsArticle` への代入を除いて `PublishedAt` だけ出る。事実はどの終端にも同じ形で運ばれるだけで、結末を分けないため
 
+## 図の形
+
+`-shape` で 2 通りの描き方を選ぶ。既定は `state`。
+
+```
+go tool decision-pattern flow -shape=decision ./domain/...
+```
+
+`state` は状態だけをノードにする。判断は辺のラベルになるので、`return` に至るまでに通った条件が「かつ」で連なる。状態と状態の関係を俯瞰したいときはこちら。
+
+`decision` は判断もノードにする。辺のラベルは枝の名前 1 つで済み、同じ判断は 1 ノードにまとまる。前掲の例はこう出る。
+
+```mermaid
+flowchart TD
+  classDef box text-align:left;
+  start0(["NewPublishDecision"])
+  q0{"article.Status != StatusDraft"}
+  q1{"article.Body == #quot;#quot;"}
+  q2{"suspended"}
+  n0["NeedArticle<br/>- ArticleID ArticleID<br/>+ article Article"]:::box
+  n1(["Failed<br/>- Err: ErrNotDraft"]):::box
+  n2(["Failed<br/>- Err: ErrEmptyBody"]):::box
+  n3["NeedAuthorSuspension<br/>- publishFactsArticle<br/>+ suspended bool<br/>+ now time.Time"]:::box
+  n4(["Failed<br/>- Err: ErrAuthorSuspended"]):::box
+  n5(["Decided<br/>- PublishedAt: now"]):::box
+  start0 --> n0
+  n0 --> q0
+  q0 -- "yes" --> n1
+  q0 -- "no" --> q1
+  q1 -- "yes" --> n2
+  q1 -- "no" --> n3
+  n3 --> q2
+  q2 -- "yes" --> n4
+  q2 -- "no" --> n5
+```
+
+ひし形が判断、四角と角丸が状態。`switch:` が付いたひし形は値による多分岐で、辺のラベルが case の値になる。付いていないものは真偽の判断で、辺は `yes` / `no` になる。タグの無い `switch`（`switch { case cond: }`）は `if` / `else if` と同義なので、真偽の判断として case ごとに分ける。
+
+ヘルパー関数の中の判断には複数の経路から入ることがある。同じ AST ノードから来た判断は 1 つのノードにまとめるので、そこが合流として描かれる。
+
 ## 解析対象
 
 `//decision:decl` が付いた interface だけを対象にする。

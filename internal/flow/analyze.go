@@ -42,10 +42,26 @@ type Node struct {
 	Edges  []Edge
 }
 
+// Guard は経路上の 1 つの分岐で、どの枝を選んだかを表す。
+//
+// Text だけあれば状態遷移図は描けるが、それだと「この条件とあの条件は同じ if の
+// 表と裏」という関係が失われる。判断をノードにして描くには、どの分岐から来たかを
+// 知る必要があるので、分岐元の位置を持たせる。ヘルパー関数の中の分岐は複数の経路
+// から辿られるが、同じ AST ノードなので Origin も同じ値になり、1 つの判断として
+// まとめられる。
+type Guard struct {
+	Text     string    // 枝の条件。状態遷移図のラベルはこれを連ねたもの
+	Origin   token.Pos // 分岐元の if / switch の位置
+	Subject  string    // 判断そのもの。if なら条件式、switch なら対象の式
+	IsSwitch bool      // switch の分岐か
+	Arm      string    // 枝の名前。yes / no、または case の値
+}
+
 // Edge は状態遷移。Label は遷移を発生させた分岐条件のソース。
 type Edge struct {
-	To    string
-	Label string
+	To     string
+	Label  string
+	Guards []Guard
 }
 
 // Entry は開始点。1 つのコンストラクタが条件ごとに違う状態から始める場合があるので、
@@ -357,7 +373,7 @@ func (a *analyzer) decideMethod(named *types.Named) *ast.FuncDecl {
 type returnSite struct {
 	typ     *types.Named
 	lit     *ast.CompositeLit
-	guards  []string
+	guards  []Guard
 	unknown string
 }
 
@@ -365,13 +381,13 @@ type returnSite struct {
 //
 // return が同じパッケージの関数呼び出しになっている場合はその関数の中まで辿る。
 // 辿らないと「ヘルパーに切り出した分岐」が図から丸ごと消える。
-func (a *analyzer) collectReturns(fd *ast.FuncDecl, guards []string, seen map[*types.Func]bool) []returnSite {
+func (a *analyzer) collectReturns(fd *ast.FuncDecl, guards []Guard, seen map[*types.Func]bool) []returnSite {
 	if fd == nil || fd.Body == nil {
 		return nil
 	}
 	sig := a.signatureOf(fd)
 	var out []returnSite
-	a.walkStmts(fd.Body.List, guards, func(ret *ast.ReturnStmt, g []string) {
+	a.walkStmts(fd.Body.List, guards, func(ret *ast.ReturnStmt, g []Guard) {
 		out = append(out, a.resolveReturnStmt(ret, sig, g, seen)...)
 	})
 	return out
@@ -389,7 +405,7 @@ func (a *analyzer) signatureOf(fd *ast.FuncDecl) *types.Signature {
 // resolveReturnStmt は return 文のうち Decision を返している位置だけを見る。
 // Decide が (XxxDecision, error) を返す形もルール上は書けるので、位置を見ずに
 // 全オペランドを解決すると error や nil が状態として図に出てしまう。
-func (a *analyzer) resolveReturnStmt(ret *ast.ReturnStmt, sig *types.Signature, guards []string, seen map[*types.Func]bool) []returnSite {
+func (a *analyzer) resolveReturnStmt(ret *ast.ReturnStmt, sig *types.Signature, guards []Guard, seen map[*types.Func]bool) []returnSite {
 	if sig == nil {
 		return nil
 	}
@@ -432,7 +448,7 @@ func (a *analyzer) isDecisionType(t types.Type) bool {
 	return ok && !types.IsInterface(named) && types.Implements(named, a.iface)
 }
 
-func (a *analyzer) resolveReturn(expr ast.Expr, guards []string, seen map[*types.Func]bool) []returnSite {
+func (a *analyzer) resolveReturn(expr ast.Expr, guards []Guard, seen map[*types.Func]bool) []returnSite {
 	typ := a.pkg.TypesInfo.TypeOf(expr)
 	if typ == nil {
 		return []returnSite{{guards: guards, unknown: a.src(expr)}}
@@ -493,11 +509,11 @@ func (a *analyzer) calleeFunc(call *ast.CallExpr) *types.Func {
 }
 
 // walkStmts は文を辿りながら、その return に至るまでの分岐条件を積む。
-func (a *analyzer) walkStmts(stmts []ast.Stmt, guards []string, emit func(*ast.ReturnStmt, []string)) {
+func (a *analyzer) walkStmts(stmts []ast.Stmt, guards []Guard, emit func(*ast.ReturnStmt, []Guard)) {
 	for _, stmt := range stmts {
 		a.walkStmt(stmt, guards, emit)
 		if negs := a.guardsAfter(stmt); len(negs) > 0 {
-			next := make([]string, 0, len(guards)+len(negs))
+			next := make([]Guard, 0, len(guards)+len(negs))
 			guards = append(append(next, guards...), negs...)
 		}
 	}
@@ -508,14 +524,14 @@ func (a *analyzer) walkStmts(stmts []ast.Stmt, guards []string, emit func(*ast.R
 //
 // 分岐の全枝が脱出するなら、その後ろに書かれた文は「どの枝にも入らなかった場合」
 // にあたる。else を書いたときに乗る否定条件と同じものを、以降の文へ伝播させる。
-//
-// 型 switch は対象外。Decision の生成側では使われないため。
-func (a *analyzer) guardsAfter(stmt ast.Stmt) []string {
+func (a *analyzer) guardsAfter(stmt ast.Stmt) []Guard {
 	switch s := stmt.(type) {
 	case *ast.IfStmt:
 		return a.ifFallthroughGuards(s)
 	case *ast.SwitchStmt:
 		return a.switchFallthroughGuards(s)
+	case *ast.TypeSwitchStmt:
+		return a.typeSwitchFallthroughGuards(s)
 	}
 	return nil
 }
@@ -523,14 +539,14 @@ func (a *analyzer) guardsAfter(stmt ast.Stmt) []string {
 // ifFallthroughGuards は if 連鎖を抜けた先に積むべき否定条件を返す。
 // if / else if の枝がすべて脱出するときだけ、全条件の否定を返す。
 // 途中に脱出しない枝があると抜けた先へ複数の経路が合流するので、条件で表せない。
-func (a *analyzer) ifFallthroughGuards(ifs *ast.IfStmt) []string {
-	var negs []string
+func (a *analyzer) ifFallthroughGuards(ifs *ast.IfStmt) []Guard {
+	var negs []Guard
 	for {
 		if !terminates(ifs.Body, true) {
 			return nil
 		}
 		// else 側に乗る条件と、連鎖を抜けた先に乗る条件は同じもの。
-		negs = append(negs, a.condLabel(ifs.Init, a.negateExpr(ifs.Cond)))
+		negs = append(negs, a.ifGuard(ifs, false))
 		switch els := ifs.Else.(type) {
 		case nil:
 			return negs
@@ -550,7 +566,7 @@ func (a *analyzer) ifFallthroughGuards(ifs *ast.IfStmt) []string {
 
 // switchFallthroughGuards は switch を抜けた先に積むべき否定条件を返す。
 // default 節があるか、脱出しない case があれば nil。
-func (a *analyzer) switchFallthroughGuards(sw *ast.SwitchStmt) []string {
+func (a *analyzer) switchFallthroughGuards(sw *ast.SwitchStmt) []Guard {
 	var negs []string
 	for _, c := range sw.Body.List {
 		cc, ok := c.(*ast.CaseClause)
@@ -567,7 +583,122 @@ func (a *analyzer) switchFallthroughGuards(sw *ast.SwitchStmt) []string {
 		}
 		negs = append(negs, a.negateCase(cc, sw.Tag))
 	}
-	return negs
+	if len(negs) == 0 {
+		return nil
+	}
+	// switch を抜けた先は「どの case にも当たらなかった場合」で、分岐としては
+	// 1 つの枝。Guard も 1 つにまとめる。
+	last := sw.Body.List[len(sw.Body.List)-1].(*ast.CaseClause)
+	g := a.caseDecision(sw, last)
+	g.Text, g.Arm = joinConds(negs), "それ以外"
+	return []Guard{g}
+}
+
+// ifDecision / caseDecision は「どの判断に属するか」だけを決める。
+// 枝の名前と条件の文字列は呼び出し側で足す。判断の同定は肯定・否定に依らないので、
+// ここを分けておかないと同じ規則を 4 箇所に書くことになる。
+func (a *analyzer) ifDecision(ifs *ast.IfStmt) Guard {
+	return Guard{Origin: ifs.Pos(), Subject: a.condLabel(ifs.Init, a.src(ifs.Cond))}
+}
+
+// caseDecision はタグの有無で分ける。タグ付きは値による多分岐なので switch 全体で
+// 1 つの判断。タグなしは if / else if と同義なので case ごとに別の判断になる。
+// まとめてしまうと、条件の違う枝が 1 つのひし形にぶら下がって見出しが書けなくなる。
+func (a *analyzer) caseDecision(sw *ast.SwitchStmt, cc *ast.CaseClause) Guard {
+	if sw.Tag == nil {
+		return Guard{Origin: cc.Pos(), Subject: a.caseLabel(nil, cc)}
+	}
+	return Guard{Origin: sw.Pos(), Subject: a.src(sw.Tag), IsSwitch: true}
+}
+
+// ifGuard は if の枝に入る条件を表す Guard を作る。
+func (a *analyzer) ifGuard(ifs *ast.IfStmt, yes bool) Guard {
+	g := a.ifDecision(ifs)
+	if yes {
+		g.Text, g.Arm = g.Subject, "yes"
+		return g
+	}
+	g.Text, g.Arm = a.condLabel(ifs.Init, a.negateExpr(ifs.Cond)), "no"
+	return g
+}
+
+// typeSwitchFallthroughGuards は型 switch を抜けた先に積むべき条件を返す。
+// 判断の生成側で型 switch は使われないが、case のラベルは出しているので、
+// 抜けた先だけ条件が付かないのは不揃いになる。
+func (a *analyzer) typeSwitchFallthroughGuards(sw *ast.TypeSwitchStmt) []Guard {
+	var cases []string
+	for _, c := range sw.Body.List {
+		cc, ok := c.(*ast.CaseClause)
+		if !ok {
+			return nil
+		}
+		if len(cc.List) == 0 { // default があるなら素通りしない
+			return nil
+		}
+		if !terminatesList(cc.Body, false) {
+			return nil
+		}
+		cases = append(cases, a.caseLabel(nil, cc))
+	}
+	if len(cases) == 0 {
+		return nil
+	}
+	subject := a.typeSwitchSubject(sw)
+	return []Guard{{
+		Text:     subject + " は " + joinConds(cases) + " のいずれでもない",
+		Origin:   sw.Pos(),
+		Subject:  subject,
+		IsSwitch: true,
+		Arm:      "それ以外",
+	}}
+}
+
+// switchGuard は case 節が選ばれたことを表す Guard を作る。
+func (a *analyzer) switchGuard(sw *ast.SwitchStmt, cc *ast.CaseClause) Guard {
+	g := a.caseDecision(sw, cc)
+	g.Text = a.caseLabel(sw.Tag, cc)
+	g.Arm = "yes"
+	if g.IsSwitch {
+		g.Arm = a.caseLabel(nil, cc) // タグを外した、値だけのラベル
+	}
+	return g
+}
+
+// switchNegGuard は case 節に当たらなかったことを表す Guard を作る。
+func (a *analyzer) switchNegGuard(sw *ast.SwitchStmt, cc *ast.CaseClause) Guard {
+	g := a.caseDecision(sw, cc)
+	g.Text = a.negateCase(cc, sw.Tag)
+	g.Arm = "no"
+	if g.IsSwitch {
+		g.Arm = "それ以外"
+	}
+	return g
+}
+
+func (a *analyzer) typeSwitchSubject(s *ast.TypeSwitchStmt) string {
+	var expr ast.Expr
+	switch assign := s.Assign.(type) {
+	case *ast.AssignStmt:
+		if len(assign.Rhs) == 1 {
+			expr = assign.Rhs[0]
+		}
+	case *ast.ExprStmt:
+		expr = assign.X
+	}
+	ta, ok := expr.(*ast.TypeAssertExpr)
+	if !ok {
+		return "type switch"
+	}
+	return a.src(ta.X) + ".(type)"
+}
+
+// switchSubject は判断ノードに出す switch の見出しを作る。
+// タグなし switch は if / else if と同義なので、対象の式を持たない。
+func (a *analyzer) switchSubject(tag ast.Expr) string {
+	if tag == nil {
+		return ""
+	}
+	return a.src(tag)
 }
 
 // terminates はブロックが必ず脱出するかを判定する。Go 仕様の terminating
@@ -666,7 +797,7 @@ func (a *analyzer) negateCase(cc *ast.CaseClause, tag ast.Expr) string {
 		}
 		parts = append(parts, a.negateExpr(cond))
 	}
-	return strings.Join(parts, " かつ ")
+	return joinConds(parts)
 }
 
 // negateExpr は条件を否定した表示用の文字列を返す。二重否定を畳み、
@@ -703,18 +834,16 @@ func (a *analyzer) condLabel(init ast.Stmt, cond string) string {
 	return a.src(init) + "; " + cond
 }
 
-func (a *analyzer) walkStmt(stmt ast.Stmt, guards []string, emit func(*ast.ReturnStmt, []string)) {
+func (a *analyzer) walkStmt(stmt ast.Stmt, guards []Guard, emit func(*ast.ReturnStmt, []Guard)) {
 	switch s := stmt.(type) {
 	case *ast.ReturnStmt:
 		emit(s, guards)
 	case *ast.BlockStmt:
 		a.walkStmts(s.List, guards, emit)
 	case *ast.IfStmt:
-		cond := a.condLabel(s.Init, a.src(s.Cond))
-		a.walkStmts(s.Body.List, append(cloneGuards(guards), cond), emit)
+		a.walkStmts(s.Body.List, append(cloneGuards(guards), a.ifGuard(s, true)), emit)
 		if s.Else != nil {
-			neg := a.condLabel(s.Init, a.negateExpr(s.Cond))
-			a.walkStmt(s.Else, append(cloneGuards(guards), neg), emit)
+			a.walkStmt(s.Else, append(cloneGuards(guards), a.ifGuard(s, false)), emit)
 		}
 	case *ast.ForStmt:
 		a.walkStmt(s.Body, guards, emit)
@@ -723,7 +852,7 @@ func (a *analyzer) walkStmt(stmt ast.Stmt, guards []string, emit func(*ast.Retur
 	case *ast.SwitchStmt:
 		// タグなし switch は if / else if と同義なので、先行 case の否定を積む。
 		// タグ付きは値で排他になるので不要。
-		var prior []string
+		var prior []Guard
 		for _, c := range s.Body.List {
 			cc, ok := c.(*ast.CaseClause)
 			if !ok {
@@ -741,16 +870,24 @@ func (a *analyzer) walkStmt(stmt ast.Stmt, guards []string, emit func(*ast.Retur
 			if s.Tag == nil {
 				g = append(g, prior...)
 			}
-			a.walkStmts(cc.Body, append(g, a.caseLabel(s.Tag, cc)), emit)
-			prior = append(prior, a.negateCase(cc, s.Tag))
+			a.walkStmts(cc.Body, append(g, a.switchGuard(s, cc)), emit)
+			prior = append(prior, a.switchNegGuard(s, cc))
 		}
 	case *ast.TypeSwitchStmt:
+		subject := a.typeSwitchSubject(s)
 		for _, c := range s.Body.List {
 			cc, ok := c.(*ast.CaseClause)
 			if !ok {
 				continue
 			}
-			a.walkStmts(cc.Body, append(cloneGuards(guards), a.caseLabel(nil, cc)), emit)
+			label := a.caseLabel(nil, cc)
+			a.walkStmts(cc.Body, append(cloneGuards(guards), Guard{
+				Text:     label,
+				Origin:   s.Pos(),
+				Subject:  subject,
+				IsSwitch: true,
+				Arm:      label,
+			}), emit)
 		}
 	case *ast.LabeledStmt:
 		a.walkStmt(s.Stmt, guards, emit)
@@ -778,17 +915,31 @@ func (a *analyzer) caseLabel(tag ast.Expr, cc *ast.CaseClause) string {
 	return joined
 }
 
-func cloneGuards(g []string) []string {
-	out := make([]string, len(g), len(g)+1)
+// joinConds は条件を連言として 1 つの文字列にする。接続語はここだけに置く。
+func joinConds(conds []string) string {
+	return strings.Join(conds, " かつ ")
+}
+
+// guardsLabel は Guard の列を状態遷移図のラベルにする。
+func guardsLabel(gs []Guard) string {
+	if len(gs) == 0 {
+		return "それ以外"
+	}
+	conds := make([]string, len(gs))
+	for i, g := range gs {
+		conds[i] = g.Text
+	}
+	return joinConds(conds)
+}
+
+func cloneGuards(g []Guard) []Guard {
+	out := make([]Guard, len(g), len(g)+1)
 	copy(out, g)
 	return out
 }
 
 func (a *analyzer) addEdge(from *Node, r returnSite) {
-	label := strings.Join(r.guards, " かつ ")
-	if label == "" {
-		label = "それ以外"
-	}
+	label := guardsLabel(r.guards)
 	if r.typ == nil {
 		a.warnf("%s の return が静的に解決できない: %s", from.Type, r.unknown)
 		return
@@ -799,7 +950,7 @@ func (a *analyzer) addEdge(from *Node, r returnSite) {
 			return
 		}
 	}
-	from.Edges = append(from.Edges, Edge{To: to.ID, Label: label})
+	from.Edges = append(from.Edges, Edge{To: to.ID, Label: label, Guards: r.guards})
 }
 
 // needNode は Need 状態のノードを返す。型ごとに 1 つ。
@@ -955,14 +1106,10 @@ func (a *analyzer) findEntries() []Entry {
 		if sig.Results().At(0).Type() != a.ifaceObj.Type() {
 			continue
 		}
-		// 遷移の途中で中身を辿った関数は状態を返すヘルパーであって開始点ではない。
-		// 名前で判定すると、コンストラクタの命名から外れた瞬間に開始点が消える。
-		if a.inlined[fn] {
-			continue
-		}
 		fns = append(fns, fn)
 	}
 	sort.Slice(fns, func(i, j int) bool { return fns[i].Name() < fns[j].Name() })
+	byFunc := map[*types.Func]Entry{}
 	for _, fn := range fns {
 		entry := Entry{Func: fn.Name()}
 		for _, r := range a.collectReturns(a.plainFn[fn], nil, map[*types.Func]bool{}) {
@@ -970,15 +1117,26 @@ func (a *analyzer) findEntries() []Entry {
 				a.warnf("%s の return が静的に解決できない: %s", fn.Name(), r.unknown)
 				continue
 			}
-			label := strings.Join(r.guards, " かつ ")
-			if label == "" {
-				label = "それ以外"
-			}
-			entry.Edges = append(entry.Edges, Edge{To: a.stateNode(r.typ, r.lit).ID, Label: label})
+			entry.Edges = append(entry.Edges, Edge{
+				To:     a.stateNode(r.typ, r.lit).ID,
+				Label:  guardsLabel(r.guards),
+				Guards: r.guards,
+			})
 		}
 		if len(entry.Edges) > 0 {
-			entries = append(entries, entry)
+			byFunc[fn] = entry
 		}
+	}
+	// 遷移の途中で中身を辿った関数は状態を返すヘルパーであって開始点ではない。
+	// 名前で判定すると、コンストラクタの命名から外れた瞬間に開始点が消える。
+	// inlined が埋まるのは上の走査中なので、ふるいにかけるのは走査を終えてから。
+	// 先に見ると、あとで辿られたヘルパーが開始点として残ってしまう。
+	for _, fn := range fns {
+		entry, ok := byFunc[fn]
+		if !ok || a.inlined[fn] {
+			continue
+		}
+		entries = append(entries, entry)
 	}
 	return entries
 }
