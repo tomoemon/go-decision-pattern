@@ -1,6 +1,7 @@
 package flow
 
 import (
+	"fmt"
 	"slices"
 	"strings"
 	"testing"
@@ -78,5 +79,39 @@ func TestAnalyzeTypeSwitch(t *testing.T) {
 	out := RenderDecisionShape(d)
 	if !strings.Contains(out, `switch:<br/>s.(type)`) {
 		t.Errorf("型 switch の見出しが対象式になっていない\n---\n%s", out)
+	}
+}
+
+// 素通りする case がある switch でも、抜けた先の遷移はひし形から出る。
+// 条件が付かないと開始点から裸の線が生え、無条件の行き先が 2 つあるように見える。
+//
+// ノード ID は入口の並び順で決まるので直接は書かない。素通りの書き方が違うだけの
+// 2 つが、条件を出せる形（NewFallManyArms と同じ経路の持ち方）になっていればよい。
+func TestRenderDecisionShapeRoutesSwitchFallthroughThroughDecision(t *testing.T) {
+	d := analyzeDir(t, "./testdata/fallthru")
+
+	for _, fn := range []string{"NewFallEmptyCase", "NewFallWorkCase"} {
+		for _, route := range entryRoutes(d, fn) {
+			// 条件が付かない経路は枝の名前も空になり、ひし形を通らない線になる。
+			if strings.Contains(route, "それ以外 | ") || strings.Contains(route, " |  -> ") {
+				t.Errorf("%s: ひし形を通らない経路がある: %q", fn, route)
+			}
+		}
+	}
+
+	// 図の上でも、開始点から状態へ直接伸びる線が無いことを見る。
+	out := RenderDecisionShape(d)
+	for _, entry := range d.Entries {
+		if entry.Func != "NewFallEmptyCase" && entry.Func != "NewFallWorkCase" {
+			continue
+		}
+		for i, e := range d.Entries {
+			if e.Func != entry.Func {
+				continue
+			}
+			if bare := fmt.Sprintf("  start%d --> n", i); strings.Contains(out, bare) {
+				t.Errorf("%s: 開始点から状態へ裸の線が伸びている (%q)\n---\n%s", entry.Func, bare, out)
+			}
+		}
 	}
 }

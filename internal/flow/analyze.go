@@ -584,7 +584,14 @@ func (a *analyzer) switchFallthroughGuards(sw *ast.SwitchStmt) []Guard {
 		// case の中の break は switch を出るだけなので、抜けた先へ進む経路が
 		// 残る。脱出とは見なせない。
 		if !terminatesList(cc.Body, false) {
-			return nil
+			// 素通りする case は抜けた先へ合流する。枝が排他で、かつこの case が
+			// 必ず先へ進むと言い切れるときだけ、抜けた先の条件は「脱出する case の
+			// どれにも当たらなかった」で足りる。どちらか一方でも言えないなら、
+			// 連言では表せないので条件を出さない。
+			if !a.exclusiveArms(sw) || !fallsOutOfSwitch(cc.Body) {
+				return nil
+			}
+			continue
 		}
 		negs = append(negs, a.switchNegGuard(sw, cc))
 	}
@@ -712,6 +719,71 @@ func terminates(b *ast.BlockStmt, allowBreak bool) bool {
 		return false
 	}
 	return terminatesList(b.List, allowBreak)
+}
+
+// exclusiveArms は switch の枝が値で排他になり、評価の順序に依らないかを返す。
+//
+// タグ付きで、かつ全 case 式が定数のときだけ成り立つ。定数でない case 式は
+// 実行時に重なりうるので、上から順に評価されて先に書いたほうが勝つ。これは
+// タグなし switch や if 連鎖と同じ「順序を持つ」形なので、排他とは見なせない。
+func (a *analyzer) exclusiveArms(sw *ast.SwitchStmt) bool {
+	if sw.Tag == nil {
+		return false
+	}
+	for _, c := range sw.Body.List {
+		cc, ok := c.(*ast.CaseClause)
+		if !ok {
+			return false
+		}
+		for _, e := range cc.List {
+			if a.pkg.TypesInfo.Types[e].Value == nil {
+				return false
+			}
+		}
+	}
+	return true
+}
+
+// fallsOutOfSwitch は case の本体が必ず switch の先へ進むかを返す。
+//
+// terminatesList の否定ではない。あちらは「必ず脱出するか」で、判定できない形は
+// 脱出しない側に倒す。ここで要るのはその逆で、判定できない形は先へ進まない側に
+// 倒す。倒した側では条件を諦めるだけなので、嘘は出ない。
+//
+// 先へ進むと言い切れないもの: return、fallthrough（次の case へ行く）、goto、
+// ラベル付き break、continue、panic、for、range、select。case の本体の直下にある
+// break だけは switch を出るだけなので、先へ進むと数える。
+//
+// os.Exit や log.Fatal のように戻らない関数呼び出しは見分けられない。domain は
+// 純粋なのでこれらは現れない前提に乗る。
+func fallsOutOfSwitch(list []ast.Stmt) bool {
+	out := true
+	check := func(n ast.Node) bool {
+		if !out {
+			return false
+		}
+		switch s := n.(type) {
+		case *ast.FuncLit:
+			return false // 中の return は別の関数のもの
+		case *ast.ReturnStmt, *ast.BranchStmt,
+			*ast.ForStmt, *ast.RangeStmt, *ast.SelectStmt, *ast.LabeledStmt:
+			out = false
+		case *ast.CallExpr:
+			// 名前で見る。panic が別の何かに束縛されていても、諦める側に倒れるだけ。
+			if id, ok := s.Fun.(*ast.Ident); ok && id.Name == "panic" {
+				out = false
+			}
+		}
+		return out
+	}
+	for _, stmt := range list {
+		// case の直下の break は switch を出るだけ。抜けた先へ進む。
+		if br, ok := stmt.(*ast.BranchStmt); ok && br.Tok == token.BREAK && br.Label == nil {
+			continue
+		}
+		ast.Inspect(stmt, check)
+	}
+	return out
 }
 
 // terminatesList は文の並びが必ず脱出するかを判定する。末尾の 1 文で決まる。
@@ -862,9 +934,9 @@ func (a *analyzer) walkStmt(stmt ast.Stmt, guards []Guard, emit func(*ast.Return
 				a.walkStmts(cc.Body, append(g, prior...), emit)
 				continue
 			}
-			// タグなし switch は if / else if と同義なので、先行 case の否定も
-			// 積む。タグ付きは値で排他になるので case の条件だけでよい。
-			if s.Tag == nil {
+			// 枝が排他でないなら上から順の評価になるので、先行 case の否定も
+			// 積む。排他なら case の条件だけでよい。
+			if !a.exclusiveArms(s) {
 				g = append(g, prior...)
 			}
 			a.walkStmts(cc.Body, append(g, a.switchGuard(s, cc)), emit)
