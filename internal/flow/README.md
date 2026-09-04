@@ -77,10 +77,10 @@ flowchart TD
   n4(["Failed<br/>- Err: ErrAuthorSuspended"]):::box
   n5(["Decided<br/>- PublishedAt: now"]):::box
   n0 -- "article.Status != StatusDraft" --> n1
-  n0 -- "article.Body == #quot;#quot;" --> n2
-  n0 -- "それ以外" --> n3
+  n0 -- "article.Status == StatusDraft かつ article.Body == #quot;#quot;" --> n2
+  n0 -- "article.Status == StatusDraft かつ article.Body != #quot;#quot;" --> n3
   n3 -- "suspended" --> n4
-  n3 -- "それ以外" --> n5
+  n3 -- "!suspended" --> n5
 ```
 
 コードとの対応は次のとおり。
@@ -114,7 +114,7 @@ type PublishDecision interface {
 | 開始点 | interface を返す非メソッド関数 (`NewXxxDecision`) の `return` |
 | 中間状態 (四角) | `Decide` を持つ状態 |
 | 終端 (角丸) | `Decide` を持たない状態。返却リテラルのフィールドごとに分ける |
-| 遷移のラベル | `return` を囲む `if` / `switch` の条件のソース。条件が無ければ「それ以外」 |
+| 遷移のラベル | `return` に至るまでに通った `if` / `switch` の条件を「かつ」で連ねたもの。条件が無ければ「それ以外」 |
 
 ノードの中の箇条書きは記号で意味が変わる。同じ記号で並べると、持ち物と入力が同じものに見える。
 
