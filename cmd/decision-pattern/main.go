@@ -65,7 +65,7 @@ func runFlow(args []string) error {
 	outDir := fs.String("o", "", "出力先ディレクトリ。省略時は標準出力にまとめて書く")
 	dir := fs.String("C", ".", "解析を実行する起点ディレクトリ")
 	strict := fs.Bool("strict", false, "警告が 1 件でもあれば終了コード 1 にする")
-	shapeName := fs.String("shape", "state", "図の描き方。state は状態だけをノードにする。decision は判断もノードにする")
+	shapeName := fs.String("shape", flow.DefaultShape, "図の描き方。decision は判断もノードにする。state は状態だけをノードにする")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}

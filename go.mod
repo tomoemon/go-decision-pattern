@@ -1,6 +1,6 @@
 module github.com/tomoemon/go-decision-pattern
 
-go 1.24.0
+go 1.27
 
 require golang.org/x/tools v0.38.0
 

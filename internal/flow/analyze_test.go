@@ -282,8 +282,8 @@ func TestAnalyzeDefaultClauseCarriesNegation(t *testing.T) {
 	}
 }
 
-// case を break で抜けると switch の後ろへ進む経路が残るので、
-// 全 case の否定は乗せられない。乗せると通る経路が図から消える。
+// case を break で抜けると switch の後ろへ進む経路が残るので、その case の
+// 否定は乗せられない。乗せると通る経路が図から消える。
 func TestAnalyzeBreakInCaseKeepsFallthroughPath(t *testing.T) {
 	got := entryLabels(analyzeDir(t, "./testdata/branching"), "NewBranchBreakInCase")
 	for _, label := range got {
@@ -291,8 +291,69 @@ func TestAnalyzeBreakInCaseKeepsFallthroughPath(t *testing.T) {
 			t.Errorf("break で抜ける case の否定が乗っている: %q", label)
 		}
 	}
-	if !slices.Contains(got, "それ以外") {
-		t.Errorf("switch の後ろへの遷移が条件無しになっていない: %v", got)
+	if !slices.Contains(got, "k != kindB") {
+		t.Errorf("脱出する case の否定が乗っていない: %v", got)
+	}
+}
+
+// タグ付き switch を素通りする case があっても、抜けた先の条件は出せる。
+// case が値で排他で、素通りが確定するなら「脱出する case のどれにも当たらな
+// かった」で言い切れる。素通りの書き方で結果が変わってはいけない。
+func TestAnalyzeTaggedSwitchFallthroughNegatesTerminatingCasesOnly(t *testing.T) {
+	d := analyzeDir(t, "./testdata/fallthru")
+
+	for _, fn := range []string{"NewFallEmptyCase", "NewFallWorkCase"} {
+		got := entryLabels(d, fn)
+		if !slices.Contains(got, "k != kindB") {
+			t.Errorf("%s: 脱出する case の否定が乗っていない: %v", fn, got)
+		}
+		for _, label := range got {
+			if strings.Contains(label, "kindA") {
+				t.Errorf("%s: 素通りする case の否定が乗っている: %q", fn, label)
+			}
+		}
+	}
+
+	// 脱出する case が複数あるなら、その全部の否定が積まれる。
+	got := entryLabels(d, "NewFallManyArms")
+	if !slices.Contains(got, "k != kindB かつ k != kind(2)") {
+		t.Errorf("脱出する case の否定が揃っていない: %v", got)
+	}
+}
+
+// 抜けた先に着く条件が連言で表せない形では、条件を出さない。
+// 出すと、実際には通らない経路を通ることにしてしまう。
+func TestAnalyzeFallthroughWithoutExpressibleCondition(t *testing.T) {
+	d := analyzeDir(t, "./testdata/fallthru")
+
+	// 値は「出てはいけない条件」。素通りする case の否定を落とした結果、
+	// 出てしまいやすいものを選んである。
+	cases := map[string]string{
+		// case の中で一部だけ return する。抜けた先に着くには case の中の分岐も要る。
+		"NewFallPartialReturn": "k != kindB",
+		// fallthrough は次の case へ行く。switch の先へは進まない。
+		"NewFallThrough": "k != kindB",
+		// panic するかもしれない case。抜けた先へ進むとは限らない。
+		"NewFallPanicInCase": "k != kindB",
+		// 抜けない for がある case。同上。
+		"NewFallLoopInCase": "k != kindB",
+		// case 式が定数でないと実行時に重なりうるので、上から順の評価になる。
+		"NewFallNonConstCase": "k != b",
+		// タグなしの case は順序を持つ。手前が素通りすると先の case は評価されない。
+		"NewFallTagless": "v != 0",
+		// if 連鎖も同じ。
+		"NewFallIfChain": "v != 0",
+	}
+	for fn, mustNot := range cases {
+		got := entryLabels(d, fn)
+		if !slices.Contains(got, "それ以外") {
+			t.Errorf("%s: 抜けた先が条件無しになっていない: %v", fn, got)
+		}
+		for _, label := range got {
+			if strings.Contains(label, mustNot) {
+				t.Errorf("%s: 表せないはずの条件が出ている: %q", fn, label)
+			}
+		}
 	}
 }
 

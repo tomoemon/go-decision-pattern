@@ -135,7 +135,7 @@ git diff --exit-code .claude/rules/decision-pattern.md
 ```sh
 go tool decision-pattern flow ./domain/...              # 標準出力
 go tool decision-pattern flow -o docs/flow ./domain/... # Decision ごとに 1 ファイル
-go tool decision-pattern flow -shape=decision ./domain/... # 判断もノードにする
+go tool decision-pattern flow -shape=state ./domain/... # 状態だけをノードにする
 ```
 
 図の読み方、警告の種類、解析の前提と制約は [internal/flow/README.md](https://github.com/tomoemon/go-decision-pattern/blob/main/internal/flow/README.md) を参照。
