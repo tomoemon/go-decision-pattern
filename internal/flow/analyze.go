@@ -1068,7 +1068,7 @@ func (a *analyzer) stateNode(named *types.Named, lit *ast.CompositeLit) *Node {
 // ゼロ値のフィールドは書かれないので、結末の違いだけが残る。
 //
 // 埋め込んだ事実の struct は除く。どの終端にも同じ形で運ばれるだけで結末を分けず、
-// 載せるとラベルが事実の受け渡しで埋まる。
+// 載せるとラベルが事実の受け渡しで埋まる。昇格したフィールドで書いた事実も同じく除く。
 func (a *analyzer) literalLines(lit *ast.CompositeLit) []string {
 	if lit == nil {
 		return nil
@@ -1088,6 +1088,8 @@ func (a *analyzer) literalLines(lit *ast.CompositeLit) []string {
 	return parts
 }
 
+// isEmbeddedField はリテラルのキーが埋め込んだ struct に由来するかを返す。
+// 埋め込みそのもの（facts: facts{...}）と、そこから昇格したフィールド（ID: ...）の両方が当たる。
 func (a *analyzer) isEmbeddedField(lit *ast.CompositeLit, key ast.Expr) bool {
 	ident, ok := key.(*ast.Ident)
 	if !ok {
@@ -1107,7 +1109,8 @@ func (a *analyzer) isEmbeddedField(lit *ast.CompositeLit, key ast.Expr) bool {
 			return f.Embedded()
 		}
 	}
-	return false
+	// 直接のフィールドに無いキーは、埋め込んだ struct から昇格したフィールド
+	return true
 }
 
 // stateFields は状態が直接持つフィールドを 1 行ずつ返す。

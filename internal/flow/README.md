@@ -47,7 +47,8 @@ func (s PublishNeedArticle) Decide(article Article) PublishDecision {
 		return PublishFailed{Err: ErrEmptyBody}
 	}
 	return PublishNeedAuthorSuspension{
-		publishFactsArticle: publishFactsArticle{ArticleID: article.ID, AuthorID: article.AuthorID},
+		ArticleID: article.ID,
+		AuthorID:  article.AuthorID,
 	}
 }
 

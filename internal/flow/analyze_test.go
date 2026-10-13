@@ -370,6 +370,22 @@ func TestAnalyzeNegatesOuterOperatorOnly(t *testing.T) {
 	}
 }
 
+// 終端に埋め込んだ事実は、入れ子で書いても昇格したフィールドで書いても
+// ラベルに載らない。載ると、事実の値が違うだけの同じ結末が別のノードに割れる。
+func TestAnalyzeExcludesEmbeddedFactsFromTerminal(t *testing.T) {
+	d := analyzeDir(t, "./testdata/promoted")
+	var got [][]string
+	for _, n := range d.Nodes {
+		if n.Kind == KindTerminal {
+			got = append(got, n.Fields)
+		}
+	}
+	want := [][]string{{"Admin: true"}, {"Admin: false"}}
+	if !slices.EqualFunc(got, want, slices.Equal[[]string]) {
+		t.Errorf("終端の Fields = %v, want %v", got, want)
+	}
+}
+
 // 状態名から interface 名の接頭辞を削る処理が、語の途中で切ってはいけない。
 // D interface に対して Denied が enied になっていた。
 func TestAnalyzeKeepsStateNameWhenPrefixIsNotApplicable(t *testing.T) {
