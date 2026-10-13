@@ -1,6 +1,6 @@
 # Decision パターン
 
-規約バージョン: v0.1.1 — 最新は https://github.com/tomoemon/go-decision-pattern/releases で確認する
+規約バージョン: v0.1.4 — 最新は https://github.com/tomoemon/go-decision-pattern/releases で確認する
 
 Free Monad / Interpreter パターンに近い概念で、「計算の記述」と「計算の実行」を分離する。DDD トリレンマ（Purity, Completeness, Performance）を解決するためのパターン。
 
@@ -55,7 +55,8 @@ func (s XxxNeedArticle) Decide(article Article) XxxDecision {
         return XxxFailed{Err: ...}
     }
     return XxxNeedBlock{
-        xxxFactsArticle: xxxFactsArticle{ArticleID: article.ID, AuthorID: article.AuthorID},
+        ArticleID: article.ID,
+        AuthorID:  article.AuthorID,
     }
 }
 
@@ -73,6 +74,8 @@ func (s XxxNeedBlock) Decide(block Option[Block]) XxxDecision {
     return XxxNeedThreadAuthorIDs{xxxFactsArticle: s.xxxFactsArticle}
 }
 ```
+
+型の定義では事実の struct を埋め込むが、リテラルでその段の事実を確定させるときは、昇格したフィールドを直接書く（`ArticleID: article.ID`）。Go 1.27 からこの書き方ができ、`go fix` が `xxxFactsArticle: xxxFactsArticle{...}` をこの形に書き換える。それより前の Go では入れ子のリテラルで書く。前段から引き継ぐ事実は `xxxFactsArticle: s.xxxFactsArticle` のように struct ごと渡す。
 
 分ける基準は「いつ確定したか」であって「何に使うか」ではない。用途で分けると、後から読む場所が増えたときに分類が変わる。確定時点は変わらない。
 
@@ -139,7 +142,7 @@ NeedParentComment → NeedArticle ─ 投稿者が著者本人 ─────�
 
 Option 型を使ってよいのは「確定した結果として値が無い」ときだけ。「まだ取得していない」を `None` で表さない。前者は事実、後者は穴。
 
-事実を struct にまとめておくと、事実集合の不一致は「その struct を渡していない」という 1 箇所の欠落として現れ、struct リテラルの網羅を検査する lint (`exhaustruct` など) が検出できる。フィールドを状態に直接並べていると、埋め忘れがゼロ値に紛れて残る。
+事実集合の不一致は、struct リテラルの網羅を検査する lint (`exhaustruct` など) が検出できる。前段から引き継ぐ事実は struct ごと渡すので、漏れは「その struct を渡していない」という 1 箇所に現れる。その段で確定させる事実の漏れは、足りないフィールドとして現れる。フィールドを状態に直接並べると、引き継ぐたびに事実の数だけ代入が要り、漏れもその数だけの箇所に散らばる。
 
 ## 設計原則
 
