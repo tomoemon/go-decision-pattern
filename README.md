@@ -14,7 +14,7 @@ func (s XxxNeedArticle) Decide(article Article) XxxDecision {
     if article.Visibility != VisibilityPublic {
         return XxxFailed{Err: ErrNotPublic}
     }
-    return XxxNeedBlock{xxxFactsArticle: xxxFactsArticle{AuthorID: article.AuthorID}}
+    return XxxNeedBlock{AuthorID: article.AuthorID}
 }
 
 // 呼び出し側: 状態が要求したものを取ってきて渡すだけ
